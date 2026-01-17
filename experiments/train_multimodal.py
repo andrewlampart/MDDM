@@ -34,6 +34,37 @@ from data.mil_dataloader import MILBagDataset, mil_collate_fn
 from evaluation.report import EvaluationReport, ModelComparison
 
 
+def load_session_ids_from_split(split_path):
+    """Load session IDs from DAIC-WOZ split CSV file"""
+    if not split_path.exists():
+        return []
+    split_df = pd.read_csv(split_path)
+    id_col = 'Participant_ID' if 'Participant_ID' in split_df.columns else 'participant_ID'
+    if id_col in split_df.columns:
+        return split_df[id_col].tolist()
+    return []
+
+
+def get_daic_woz_splits(available_sessions=None):
+    """Get train/val/test session IDs from DAIC-WOZ standard splits (107/35/47)"""
+    train_split_path = CONFIG.DATA_ROOT / "train_split_Depression_AVEC2017.csv"
+    dev_split_path = CONFIG.DATA_ROOT / "dev_split_Depression_AVEC2017.csv"
+    test_split_path = CONFIG.DATA_ROOT / "test_split_Depression_AVEC2017.csv"
+    
+    train_sessions = load_session_ids_from_split(train_split_path)
+    val_sessions = load_session_ids_from_split(dev_split_path)
+    test_sessions = load_session_ids_from_split(test_split_path)
+    
+    # Filter to available sessions if provided
+    if available_sessions is not None:
+        available = set(available_sessions)
+        train_sessions = [s for s in train_sessions if s in available]
+        val_sessions = [s for s in val_sessions if s in available]
+        test_sessions = [s for s in test_sessions if s in available]
+    
+    return train_sessions, val_sessions, test_sessions
+
+
 def resize_spectrogram(spec: np.ndarray, target_shape: tuple = None) -> np.ndarray:
     """Resize/pad spectrogram to target shape (n_mels, time_frames)"""
     target_shape = target_shape or (CONFIG.N_MELS, CONFIG.SPECTROGRAM_LENGTH)
@@ -79,17 +110,9 @@ def load_or_train_audio_model(device: str) -> AudioCNNModel:
     labels_df = pd.read_csv(CONFIG.LABELS_CSV)
     labels_dict = dict(zip(labels_df['session_id'], labels_df['depression']))
     
-    # Split sessions
-    from sklearn.model_selection import train_test_split
-    sessions = list(labels_dict.keys())
-    labels = [labels_dict[s] for s in sessions]
-    
-    train_sessions, temp_sessions, train_labels, temp_labels = train_test_split(
-        sessions, labels, test_size=0.3, stratify=labels, random_state=CONFIG.RANDOM_SEED
-    )
-    val_sessions, test_sessions = train_test_split(
-        temp_sessions, test_size=0.5, stratify=temp_labels, random_state=CONFIG.RANDOM_SEED
-    )
+    # Use DAIC-WOZ standard splits
+    train_sessions, val_sessions, test_sessions = get_daic_woz_splits(list(labels_dict.keys()))
+    print(f"Using DAIC-WOZ splits: Train={len(train_sessions)}, Val={len(val_sessions)}, Test={len(test_sessions)}")
     
     # Create datasets
     train_dataset = SpectrogramDataset(session_ids=train_sessions, labels_dict=labels_dict, augment=True)
@@ -151,7 +174,7 @@ def load_or_train_text_model(device: str) -> MILTextModel:
 
 
 def create_multimodal_dataloader(split: str = 'test'):
-    """Create dataloader with both spectrograms and text instances"""
+    """Create dataloader with both spectrograms and text instances using DAIC-WOZ splits"""
     
     # Load labels
     labels_df = pd.read_csv(CONFIG.LABELS_CSV)
@@ -167,19 +190,11 @@ def create_multimodal_dataloader(split: str = 'test'):
     text_sessions = set(instances_df['session_id'].unique())
     
     common_sessions = spec_sessions & text_sessions & set(labels_dict.keys())
-    common_sessions = list(common_sessions)
     
-    # Split
-    from sklearn.model_selection import train_test_split
-    labels = [labels_dict[s] for s in common_sessions]
+    # Use DAIC-WOZ standard splits
+    train_sessions, val_sessions, test_sessions = get_daic_woz_splits(common_sessions)
     
-    train_sessions, temp_sessions = train_test_split(
-        common_sessions, test_size=0.3, stratify=labels, random_state=CONFIG.RANDOM_SEED
-    )
-    temp_labels = [labels_dict[s] for s in temp_sessions]
-    val_sessions, test_sessions = train_test_split(
-        temp_sessions, test_size=0.5, stratify=temp_labels, random_state=CONFIG.RANDOM_SEED
-    )
+    print(f"Using DAIC-WOZ splits: Train={len(train_sessions)}, Val={len(val_sessions)}, Test={len(test_sessions)}")
     
     if split == 'train':
         session_ids = train_sessions

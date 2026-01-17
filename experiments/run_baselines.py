@@ -24,8 +24,19 @@ from evaluation.metrics import MetricsComputer
 from evaluation.report import EvaluationReport
 
 
+def load_session_ids_from_split(split_path):
+    """Load session IDs from DAIC-WOZ split CSV file"""
+    if not split_path.exists():
+        return []
+    split_df = pd.read_csv(split_path)
+    id_col = 'Participant_ID' if 'Participant_ID' in split_df.columns else 'participant_ID'
+    if id_col in split_df.columns:
+        return split_df[id_col].tolist()
+    return []
+
+
 def load_data():
-    """Load preprocessed data"""
+    """Load preprocessed data using DAIC-WOZ standard splits (107/35/47)"""
     print("Loading data...")
     
     # Try loading from numpy files first
@@ -53,33 +64,41 @@ def load_data():
         print(f"Loading from {fused_path}...")
         df = pd.read_csv(fused_path)
         
+        # Load DAIC-WOZ standard splits
+        train_split_path = CONFIG.DATA_ROOT / "train_split_Depression_AVEC2017.csv"
+        dev_split_path = CONFIG.DATA_ROOT / "dev_split_Depression_AVEC2017.csv"
+        test_split_path = CONFIG.DATA_ROOT / "test_split_Depression_AVEC2017.csv"
+        
+        train_sessions = load_session_ids_from_split(train_split_path)
+        val_sessions = load_session_ids_from_split(dev_split_path)
+        test_sessions = load_session_ids_from_split(test_split_path)
+        
+        # Filter to available sessions
+        available_sessions = set(df['session_id'].unique())
+        train_sessions = [s for s in train_sessions if s in available_sessions]
+        val_sessions = [s for s in val_sessions if s in available_sessions]
+        test_sessions = [s for s in test_sessions if s in available_sessions]
+        
+        print(f"Using DAIC-WOZ standard splits:")
+        print(f"  Train sessions: {len(train_sessions)}, Val: {len(val_sessions)}, Test: {len(test_sessions)}")
+        
+        # Split data by session IDs
+        train_df = df[df['session_id'].isin(train_sessions)]
+        val_df = df[df['session_id'].isin(val_sessions)]
+        test_df = df[df['session_id'].isin(test_sessions)]
+        
         # Prepare features and labels
         exclude_cols = ['session_id', 'depression', 'phq8_score', 'qids_score']
         feature_cols = [c for c in df.columns if c not in exclude_cols]
         
-        X = df[feature_cols].values
-        y = df['depression'].values
+        X_train = train_df[feature_cols].values
+        X_val = val_df[feature_cols].values
+        X_test = test_df[feature_cols].values
+        y_train = train_df['depression'].values
+        y_val = val_df['depression'].values
+        y_test = test_df['depression'].values
         
-        # Split data
-        from sklearn.model_selection import train_test_split
-        
-        # First split: train+val vs test
-        X_trainval, X_test, y_trainval, y_test = train_test_split(
-            X, y,
-            test_size=CONFIG.TEST_SIZE / len(y),
-            stratify=y,
-            random_state=CONFIG.RANDOM_SEED
-        )
-        
-        # Second split: train vs val
-        X_train, X_val, y_train, y_val = train_test_split(
-            X_trainval, y_trainval,
-            test_size=CONFIG.VAL_SIZE / (CONFIG.TRAIN_SIZE + CONFIG.VAL_SIZE),
-            stratify=y_trainval,
-            random_state=CONFIG.RANDOM_SEED
-        )
-        
-        print(f"Split from fused features:")
+        print(f"Split from DAIC-WOZ standard splits:")
     
     print(f"  Train: {X_train.shape[0]} samples, {X_train.shape[1]} features")
     print(f"  Val:   {X_val.shape[0]} samples")

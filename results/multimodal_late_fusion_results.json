@@ -1,74 +1,74 @@
 {
   "model_name": "Multimodal Late Fusion",
-  "generated_at": "2026-01-17T03:13:43.921457",
-  "n_samples": 28,
-  "n_positive": 6,
+  "generated_at": "2026-01-18T00:27:59.422357",
+  "n_samples": 46,
+  "n_positive": 14,
   "n_bootstrap": 1000,
   "metrics": {
-    "accuracy": 0.7857142857142857,
-    "precision": 0.0,
-    "recall": 0.0,
-    "f1": 0.0,
+    "accuracy": 0.30434782608695654,
+    "precision": 0.30434782608695654,
+    "recall": 1.0,
+    "f1": 0.4666666666666667,
     "mcc": 0.0,
-    "sensitivity": 0.0,
-    "specificity": 1.0,
-    "tp": 0,
-    "tn": 22,
-    "fp": 0,
-    "fn": 6,
-    "auroc": 0.3636363636363636,
-    "auprc": 0.21589387464387463,
-    "brier_score": 0.17551636977866963
+    "sensitivity": 1.0,
+    "specificity": 0.0,
+    "tp": 14,
+    "tn": 0,
+    "fp": 32,
+    "fn": 0,
+    "auroc": 0.8191964285714286,
+    "auprc": 0.6047629375636894,
+    "brier_score": 0.25290600453857587
   },
   "bootstrap_ci": {
     "f1": {
-      "mean": 0.0,
-      "lower_ci": 0.0,
-      "upper_ci": 0.0,
-      "std": 0.0,
-      "n_valid_samples": 998
+      "mean": 0.4651180865377397,
+      "lower_ci": 0.2962962962962963,
+      "upper_ci": 0.6268656716417911,
+      "std": 0.08087570651285861,
+      "n_valid_samples": 1000
     },
     "auroc": {
-      "mean": 0.3609723664216956,
-      "lower_ci": 0.06859375000000005,
-      "upper_ci": 0.7083333333333334,
-      "std": 0.16010429328329576,
-      "n_valid_samples": 998
+      "mean": 0.8205388710092383,
+      "lower_ci": 0.6776140526140527,
+      "upper_ci": 0.9500223214285713,
+      "std": 0.07100974341723788,
+      "n_valid_samples": 1000
     },
     "auprc": {
-      "mean": 0.25601020998512103,
-      "lower_ci": 0.09245904558404563,
-      "upper_ci": 0.4920945374070373,
-      "std": 0.10319726083417981,
-      "n_valid_samples": 998
+      "mean": 0.6491940937766542,
+      "lower_ci": 0.3916326157772108,
+      "upper_ci": 0.910204568858292,
+      "std": 0.132286210964921,
+      "n_valid_samples": 1000
     },
     "precision": {
-      "mean": 0.0,
-      "lower_ci": 0.0,
-      "upper_ci": 0.0,
-      "std": 0.0,
-      "n_valid_samples": 998
+      "mean": 0.30663043478260876,
+      "lower_ci": 0.17391304347826086,
+      "upper_ci": 0.45652173913043476,
+      "std": 0.06850404966435107,
+      "n_valid_samples": 1000
     },
     "recall": {
-      "mean": 0.0,
-      "lower_ci": 0.0,
-      "upper_ci": 0.0,
+      "mean": 1.0,
+      "lower_ci": 1.0,
+      "upper_ci": 1.0,
       "std": 0.0,
-      "n_valid_samples": 998
+      "n_valid_samples": 1000
     },
     "accuracy": {
-      "mean": 0.7843544231319782,
-      "lower_ci": 0.6071428571428571,
-      "upper_ci": 0.9285714285714286,
-      "std": 0.08000789411614646,
-      "n_valid_samples": 998
+      "mean": 0.30663043478260876,
+      "lower_ci": 0.17391304347826086,
+      "upper_ci": 0.45652173913043476,
+      "std": 0.06850404966435107,
+      "n_valid_samples": 1000
     },
     "mcc": {
       "mean": 0.0,
       "lower_ci": 0.0,
       "upper_ci": 0.0,
       "std": 0.0,
-      "n_valid_samples": 998
+      "n_valid_samples": 1000
     }
   }
 }

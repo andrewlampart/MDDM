@@ -61,6 +61,37 @@ def resize_spectrogram(spec: np.ndarray, target_shape: tuple = None) -> np.ndarr
     return spec
 
 
+def load_session_ids_from_split(split_path):
+    """Load session IDs from DAIC-WOZ split CSV file"""
+    if not split_path.exists():
+        return []
+    split_df = pd.read_csv(split_path)
+    id_col = 'Participant_ID' if 'Participant_ID' in split_df.columns else 'participant_ID'
+    if id_col in split_df.columns:
+        return split_df[id_col].tolist()
+    return []
+
+
+def get_daic_woz_splits(available_sessions=None):
+    """Get train/val/test session IDs from DAIC-WOZ standard splits (107/35/47)"""
+    train_split_path = CONFIG.DATA_ROOT / "train_split_Depression_AVEC2017.csv"
+    dev_split_path = CONFIG.DATA_ROOT / "dev_split_Depression_AVEC2017.csv"
+    test_split_path = CONFIG.DATA_ROOT / "test_split_Depression_AVEC2017.csv"
+    
+    train_sessions = load_session_ids_from_split(train_split_path)
+    val_sessions = load_session_ids_from_split(dev_split_path)
+    test_sessions = load_session_ids_from_split(test_split_path)
+    
+    # Filter to available sessions if provided
+    if available_sessions is not None:
+        available = set(available_sessions)
+        train_sessions = [s for s in train_sessions if s in available]
+        val_sessions = [s for s in val_sessions if s in available]
+        test_sessions = [s for s in test_sessions if s in available]
+    
+    return train_sessions, val_sessions, test_sessions
+
+
 def load_multimodal_data():
     """Load and prepare multimodal data"""
     # Load labels
@@ -84,20 +115,8 @@ def load_multimodal_data():
 
 
 def split_sessions(sessions: List[int], labels_dict: Dict) -> Tuple[List, List, List]:
-    """Split sessions into train/val/test"""
-    from sklearn.model_selection import train_test_split
-    
-    labels = [labels_dict[s] for s in sessions]
-    
-    train_sessions, temp_sessions = train_test_split(
-        sessions, test_size=0.3, stratify=labels, random_state=CONFIG.RANDOM_SEED
-    )
-    temp_labels = [labels_dict[s] for s in temp_sessions]
-    val_sessions, test_sessions = train_test_split(
-        temp_sessions, test_size=0.5, stratify=temp_labels, random_state=CONFIG.RANDOM_SEED
-    )
-    
-    return train_sessions, val_sessions, test_sessions
+    """Split sessions into train/val/test using DAIC-WOZ standard splits"""
+    return get_daic_woz_splits(sessions)
 
 
 class WeightedBCELoss(nn.Module):

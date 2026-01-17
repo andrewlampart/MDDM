@@ -78,34 +78,49 @@ class BaselineClassifier:
         val_size: int = 35,
         test_size: int = 47
     ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        """Stratified train/val/test split zgodnie z DAIC-WOZ standardem
+        """Split zgodnie z DAIC-WOZ standardowymi splitami (107/35/47)
+        
+        Uses official DAIC-WOZ split CSV files instead of random split.
         
         Args:
             df: DataFrame z danymi
-            train_size: Liczba próbek w train set
-            val_size: Liczba próbek w validation set
-            test_size: Liczba próbek w test set
+            train_size: (unused, kept for backwards compatibility)
+            val_size: (unused, kept for backwards compatibility)
+            test_size: (unused, kept for backwards compatibility)
             
         Returns:
             Tuple (train_df, val_df, test_df)
         """
-        # Najpierw podziel na train+val i test
-        test_ratio = test_size / len(df)
-        train_val_df, test_df = train_test_split(
-            df,
-            test_size=test_ratio,
-            stratify=df['depression'],
-            random_state=self.random_state
-        )
+        # Load DAIC-WOZ standard splits
+        train_split_path = Config.DATA_ROOT / "train_split_Depression_AVEC2017.csv"
+        dev_split_path = Config.DATA_ROOT / "dev_split_Depression_AVEC2017.csv"
+        test_split_path = Config.DATA_ROOT / "test_split_Depression_AVEC2017.csv"
         
-        # Potem podziel train+val na train i val
-        val_ratio = val_size / (train_size + val_size)
-        train_df, val_df = train_test_split(
-            train_val_df,
-            test_size=val_ratio,
-            stratify=train_val_df['depression'],
-            random_state=self.random_state
-        )
+        def load_session_ids(split_path):
+            if not split_path.exists():
+                return []
+            split_df = pd.read_csv(split_path)
+            id_col = 'Participant_ID' if 'Participant_ID' in split_df.columns else 'participant_ID'
+            if id_col in split_df.columns:
+                return split_df[id_col].tolist()
+            return []
+        
+        train_sessions = load_session_ids(train_split_path)
+        val_sessions = load_session_ids(dev_split_path)
+        test_sessions = load_session_ids(test_split_path)
+        
+        # Filter to available sessions
+        available_sessions = set(df['session_id'].unique())
+        train_sessions = [s for s in train_sessions if s in available_sessions]
+        val_sessions = [s for s in val_sessions if s in available_sessions]
+        test_sessions = [s for s in test_sessions if s in available_sessions]
+        
+        print(f"Using DAIC-WOZ standard splits: Train={len(train_sessions)}, Val={len(val_sessions)}, Test={len(test_sessions)}")
+        
+        # Split data by session IDs
+        train_df = df[df['session_id'].isin(train_sessions)]
+        val_df = df[df['session_id'].isin(val_sessions)]
+        test_df = df[df['session_id'].isin(test_sessions)]
         
         return train_df, val_df, test_df
     
