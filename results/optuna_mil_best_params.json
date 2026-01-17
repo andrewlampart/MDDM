@@ -1,0 +1,15 @@
+{
+  "best_params": {
+    "hidden_dim": 256,
+    "dropout_rate": 0.3684725789379031,
+    "learning_rate": 0.0004438277669999276,
+    "pos_weight": 1.53592375122964,
+    "unfreeze_layers": 1,
+    "pooling_strategy": "attention",
+    "weight_decay": 5.279879280175421e-05
+  },
+  "best_score": 0.5454545454545454,
+  "metric": "f1",
+  "n_trials": 35,
+  "study_name": "mil_text_optimization"
+}

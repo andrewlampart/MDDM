@@ -1,0 +1,74 @@
+{
+  "model_name": "Multimodal Late Fusion",
+  "generated_at": "2026-01-17T03:13:43.921457",
+  "n_samples": 28,
+  "n_positive": 6,
+  "n_bootstrap": 1000,
+  "metrics": {
+    "accuracy": 0.7857142857142857,
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1": 0.0,
+    "mcc": 0.0,
+    "sensitivity": 0.0,
+    "specificity": 1.0,
+    "tp": 0,
+    "tn": 22,
+    "fp": 0,
+    "fn": 6,
+    "auroc": 0.3636363636363636,
+    "auprc": 0.21589387464387463,
+    "brier_score": 0.17551636977866963
+  },
+  "bootstrap_ci": {
+    "f1": {
+      "mean": 0.0,
+      "lower_ci": 0.0,
+      "upper_ci": 0.0,
+      "std": 0.0,
+      "n_valid_samples": 998
+    },
+    "auroc": {
+      "mean": 0.3609723664216956,
+      "lower_ci": 0.06859375000000005,
+      "upper_ci": 0.7083333333333334,
+      "std": 0.16010429328329576,
+      "n_valid_samples": 998
+    },
+    "auprc": {
+      "mean": 0.25601020998512103,
+      "lower_ci": 0.09245904558404563,
+      "upper_ci": 0.4920945374070373,
+      "std": 0.10319726083417981,
+      "n_valid_samples": 998
+    },
+    "precision": {
+      "mean": 0.0,
+      "lower_ci": 0.0,
+      "upper_ci": 0.0,
+      "std": 0.0,
+      "n_valid_samples": 998
+    },
+    "recall": {
+      "mean": 0.0,
+      "lower_ci": 0.0,
+      "upper_ci": 0.0,
+      "std": 0.0,
+      "n_valid_samples": 998
+    },
+    "accuracy": {
+      "mean": 0.7843544231319782,
+      "lower_ci": 0.6071428571428571,
+      "upper_ci": 0.9285714285714286,
+      "std": 0.08000789411614646,
+      "n_valid_samples": 998
+    },
+    "mcc": {
+      "mean": 0.0,
+      "lower_ci": 0.0,
+      "upper_ci": 0.0,
+      "std": 0.0,
+      "n_valid_samples": 998
+    }
+  }
+}

@@ -1,0 +1,74 @@
+{
+  "model_name": "MIL Text (attention)",
+  "generated_at": "2026-01-17T02:32:28.477075",
+  "n_samples": 28,
+  "n_positive": 6,
+  "n_bootstrap": 1000,
+  "metrics": {
+    "accuracy": 0.21428571428571427,
+    "precision": 0.21428571428571427,
+    "recall": 1.0,
+    "f1": 0.35294117647058826,
+    "mcc": 0.0,
+    "sensitivity": 1.0,
+    "specificity": 0.0,
+    "tp": 6,
+    "tn": 0,
+    "fp": 22,
+    "fn": 0,
+    "auroc": 0.38636363636363635,
+    "auprc": 0.24788866104655577,
+    "brier_score": 0.2482113391160965
+  },
+  "bootstrap_ci": {
+    "f1": {
+      "mean": 0.3453247718640926,
+      "lower_ci": 0.13333333333333333,
+      "upper_ci": 0.5263157894736842,
+      "std": 0.10396014262962167,
+      "n_valid_samples": 999
+    },
+    "auroc": {
+      "mean": 0.3911290425715502,
+      "lower_ci": 0.06956521739130436,
+      "upper_ci": 0.71875,
+      "std": 0.1641986929757771,
+      "n_valid_samples": 999
+    },
+    "auprc": {
+      "mean": 0.299697512049579,
+      "lower_ci": 0.0890438596491228,
+      "upper_ci": 0.586463513338513,
+      "std": 0.1335726170160256,
+      "n_valid_samples": 999
+    },
+    "precision": {
+      "mean": 0.2134992134992135,
+      "lower_ci": 0.07142857142857142,
+      "upper_ci": 0.35714285714285715,
+      "std": 0.0766995167610322,
+      "n_valid_samples": 999
+    },
+    "recall": {
+      "mean": 1.0,
+      "lower_ci": 1.0,
+      "upper_ci": 1.0,
+      "std": 0.0,
+      "n_valid_samples": 999
+    },
+    "accuracy": {
+      "mean": 0.2134992134992135,
+      "lower_ci": 0.07142857142857142,
+      "upper_ci": 0.35714285714285715,
+      "std": 0.0766995167610322,
+      "n_valid_samples": 999
+    },
+    "mcc": {
+      "mean": 0.0,
+      "lower_ci": 0.0,
+      "upper_ci": 0.0,
+      "std": 0.0,
+      "n_valid_samples": 999
+    }
+  }
+}
