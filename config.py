@@ -124,11 +124,31 @@ class Config:
     N_FEATURES_SELECT: int = 50
     
     # ===================
-    # GPU parameters
+    # GPU parameters - RTX 5060 8GB Blackwell
     # ===================
     USE_GPU: bool = CUDA_AVAILABLE
     DEVICE: str = "cuda" if CUDA_AVAILABLE else "cpu"
-    USE_MIXED_PRECISION: bool = True  # For RTX 5060
+    USE_MIXED_PRECISION: bool = True
+    USE_BF16: bool = True  # Blackwell preferuje bf16 nad fp16
+    GPU_MEMORY_FRACTION: float = 0.8  # Zostawić 20% VRAM wolne dla systemu
+    
+    # ===================
+    # Windows-specific settings
+    # ===================
+    NUM_WORKERS: int = 0  # Windows wymaga 0 dla DataLoader (multiprocessing issues)
+    PIN_MEMORY: bool = False  # Windows nie obsługuje dobrze pin_memory
+    
+    # ===================
+    # Audio processing limits (dla stabilności GPU)
+    # ===================
+    MAX_AUDIO_LENGTH_SEC: int = 60  # Chunk długiego audio na 60s fragmenty
+    AUDIO_CHUNK_OVERLAP_SEC: int = 5  # Overlap między chunkami
+    AUDIO_BATCH_SIZE: int = 4  # Umiarkowany batch (opcja A)
+    
+    # ===================
+    # Text processing limits
+    # ===================
+    TEXT_BATCH_SIZE: int = 32  # Zwiększony batch dla BERT (opcja A)
     
     # ===================
     # Evaluation parameters
@@ -204,8 +224,33 @@ class Config:
             print(f"CUDA version: {torch.version.cuda}")
             print(f"GPU: {torch.cuda.get_device_name(0)}")
             print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+            print(f"Memory fraction limit: {self.GPU_MEMORY_FRACTION * 100:.0f}%")
+            print(f"BF16 enabled: {self.USE_BF16}")
         else:
             print("GPU not available, using CPU")
+    
+    def setup_gpu_memory_limit(self):
+        """Setup GPU memory limit to prevent OOM crashes"""
+        if TORCH_AVAILABLE and CUDA_AVAILABLE:
+            import torch
+            # Limit memory fraction dla stabilności
+            torch.cuda.set_per_process_memory_fraction(
+                self.GPU_MEMORY_FRACTION, 
+                device=0
+            )
+            # Włącz memory efficient attention jeśli dostępne
+            if hasattr(torch.backends.cuda, 'enable_mem_efficient_sdp'):
+                torch.backends.cuda.enable_mem_efficient_sdp(True)
+            print(f"GPU memory limit set to {self.GPU_MEMORY_FRACTION * 100:.0f}%")
+    
+    def clear_gpu_memory(self):
+        """Clear GPU memory cache"""
+        if TORCH_AVAILABLE and CUDA_AVAILABLE:
+            import torch
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
 
 
 # Global config instance
@@ -261,7 +306,8 @@ class LegacyConfig:
     PROBLEMATIC_SESSIONS = CONFIG.PROBLEMATIC_SESSIONS
     
     BATCH_SIZE = CONFIG.BATCH_SIZE
-    NUM_WORKERS = 4
+    NUM_WORKERS = CONFIG.NUM_WORKERS  # 0 dla Windows
+    PIN_MEMORY = CONFIG.PIN_MEMORY
     
     @classmethod
     def create_directories(cls):

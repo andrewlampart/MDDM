@@ -1,0 +1,11 @@
+{
+  "audio_f1": 0.27282752335383914,
+  "text_f1": 0.3906432748538011,
+  "combined_f1": 0.34450243255196816,
+  "avg_individual_f1": 0.3317353991038201,
+  "max_individual_f1": 0.3906432748538011,
+  "synergy": -0.04614084230183296,
+  "synergy_pct": -11.811503044331493,
+  "interpretation": "No synergy - best single modality is sufficient",
+  "recommendation": "Use Text only (simpler model)"
+}
