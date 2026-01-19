@@ -70,3 +70,8 @@ Thumbs.db
 .cache/
 .pytest_cache/
 .mypy_cache/
+
+# Personal/Private files (DO NOT PUBLISH)
+individualresearchplan.md
+IPB_*.pdf
+setup.md

@@ -95,4 +95,4 @@ DAIC-WOZ (Distress Analysis Interview Corpus):
 
 ## Autor
 
-Jakub Pawłowski - PhD Research, GUMed
+PhD Research Project

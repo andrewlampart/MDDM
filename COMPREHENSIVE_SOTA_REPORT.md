@@ -1,6 +1,6 @@
 # 🧠 MULTIMODAL DEPRESSION DETECTION - KOMPLETNY RAPORT
 ## State-of-the-Art Pipeline: Audio Spektrograms + Text + Advanced Fusion
-### Doktorat GUMed | 2024-2025 SoTA Methods | Production-Ready Code
+### PhD Research Project | 2024-2025 SoTA Methods | Production-Ready Code
 
 ---
 
