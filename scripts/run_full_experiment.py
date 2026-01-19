@@ -282,32 +282,38 @@ class ExperimentPipeline:
         logger.info("[OK] Feature extraction complete!")
     
     def _extract_text_features(self):
-        """Extract BERT text features from transcripts with memory management."""
-        logger.info("\n--- Extracting Text Features (BERT) ---")
+        """Extract advanced text features (BERT + topic + linguistic)."""
+        logger.info("\n--- Extracting Text Features (Advanced: BERT + Topics + Linguistic) ---")
         logger.info(get_gpu_memory_info())
         
-        from models.text_encoder_bert import TextEncoderBERT
+        from models.text_encoder_bert import TextEncoderAdvanced
         
-        encoder = TextEncoderBERT(model_name='multilingual')
+        # Use advanced encoder with all features
+        encoder = TextEncoderAdvanced(
+            bert_model='multilingual',
+            n_topics=30,  # Reduced for small dataset
+            use_topics=True,
+            use_linguistic=True,
+            use_sentiment=True
+        )
         logger.info(f"Using: {encoder}")
         
-        text_features = []
+        # First pass: collect all transcripts for topic model fitting
+        all_transcripts = []
+        transcript_map = {}
         participant_ids = []
         
-        for i, pid in enumerate(self.all_participants):
+        for pid in self.all_participants:
             transcript_file = self.data_dir / f"{pid}_TRANSCRIPT.csv"
+            participant_ids.append(pid)
             
             if not transcript_file.exists():
-                logger.warning(f"Missing transcript for {pid}, using zeros")
-                text_features.append(np.zeros(encoder.embedding_dim))
-                participant_ids.append(pid)
+                transcript_map[pid] = ""
                 continue
             
             try:
-                # Load transcript
                 df = pd.read_csv(transcript_file, sep='\t')
                 
-                # Get participant responses (not Ellie)
                 if 'speaker' in df.columns:
                     participant_text = df[df['speaker'] == 'Participant']['value'].tolist()
                 elif 'value' in df.columns:
@@ -315,62 +321,74 @@ class ExperimentPipeline:
                 else:
                     participant_text = df.iloc[:, -1].tolist()
                 
-                # Combine into single text
                 full_text = ' '.join([str(t) for t in participant_text if pd.notna(t)])
+                transcript_map[pid] = full_text
                 
+                if full_text.strip():
+                    all_transcripts.append(full_text)
+                    
+            except Exception as e:
+                logger.warning(f"Error loading transcript {pid}: {e}")
+                transcript_map[pid] = ""
+        
+        # Fit topic model on all transcripts
+        if all_transcripts:
+            logger.info(f"Fitting topic model on {len(all_transcripts)} transcripts...")
+            encoder.fit_topics(all_transcripts)
+        
+        # Second pass: extract features
+        text_features = []
+        
+        for i, pid in enumerate(self.all_participants):
+            full_text = transcript_map.get(pid, "")
+            
+            try:
                 if not full_text.strip():
-                    logger.warning(f"Empty transcript for {pid}")
-                    text_features.append(np.zeros(encoder.embedding_dim))
+                    text_features.append(np.zeros(encoder.get_embedding_dim()))
                 else:
-                    embedding = encoder.encode([full_text])[0]
+                    embedding = encoder.encode_all([full_text])[0]
                     text_features.append(embedding)
-                
+                    
             except RuntimeError as e:
                 if "out of memory" in str(e).lower():
-                    logger.warning(f"OOM for {pid}, clearing memory and retrying")
+                    logger.warning(f"OOM for {pid}, clearing memory")
                     clear_gpu_memory()
-                    try:
-                        embedding = encoder.encode([full_text], batch_size=1)[0]
-                        text_features.append(embedding)
-                    except Exception as e2:
-                        logger.error(f"Retry failed for {pid}: {e2}")
-                        text_features.append(np.zeros(encoder.embedding_dim))
+                    text_features.append(np.zeros(encoder.get_embedding_dim()))
                 else:
                     logger.warning(f"Error processing {pid}: {e}")
-                    text_features.append(np.zeros(encoder.embedding_dim))
+                    text_features.append(np.zeros(encoder.get_embedding_dim()))
             except Exception as e:
                 logger.warning(f"Error processing {pid}: {e}")
-                text_features.append(np.zeros(encoder.embedding_dim))
+                text_features.append(np.zeros(encoder.get_embedding_dim()))
             
-            participant_ids.append(pid)
-            
-            # Periodic memory cleanup
             if (i + 1) % 20 == 0:
                 logger.info(f"  Processed {i+1}/{len(self.all_participants)} transcripts")
                 clear_gpu_memory()
-                logger.debug(get_gpu_memory_info())
         
         self.features['text'] = np.array(text_features)
         self.features['participant_ids'] = participant_ids
         
-        # Final cleanup
         clear_gpu_memory()
         
-        # Save
         np.save(self.processed_dir / 'text_features.npy', self.features['text'])
         logger.info(f"Text features shape: {self.features['text'].shape}")
         logger.info(get_gpu_memory_info())
     
     def _extract_audio_features(self):
-        """Extract audio features (prosody + optionally Wav2Vec) with error recovery."""
-        logger.info(f"\n--- Extracting Audio Features (Wav2Vec={self.use_wav2vec}) ---")
+        """Extract advanced audio features (VAD + Wav2Vec + MFCC + Glottal + Prosody)."""
+        logger.info(f"\n--- Extracting Audio Features (Advanced: VAD + Wav2Vec={self.use_wav2vec}) ---")
         logger.info(get_gpu_memory_info())
         
-        from models.audio_encoder_advanced import AudioEncoderHybrid
+        from models.audio_encoder_advanced import AudioEncoderAdvanced
         
-        encoder = AudioEncoderHybrid(
+        # Use advanced encoder with VAD and all features
+        encoder = AudioEncoderAdvanced(
             use_wav2vec=self.use_wav2vec,
-            use_prosody=True
+            use_vad=True,
+            use_extended_mfcc=True,
+            use_glottal=True,
+            use_prosody=True,
+            vad_backend='energy'  # Use energy-based VAD (faster, no extra deps)
         )
         logger.info(f"Using: {encoder}")
         
@@ -395,7 +413,6 @@ class ExperimentPipeline:
                     clear_gpu_memory()
                     
                     try:
-                        # Retry - encoder already has OOM handling with CPU fallback
                         embedding = encoder.extract_all(str(audio_file))
                         audio_features.append(embedding)
                     except Exception as e2:
@@ -412,7 +429,6 @@ class ExperimentPipeline:
                 audio_features.append(np.zeros(encoder.get_embedding_dim()))
                 failed_count += 1
             
-            # Periodic memory cleanup and progress
             if (i + 1) % 5 == 0:
                 clear_gpu_memory()
                 
@@ -422,17 +438,15 @@ class ExperimentPipeline:
         
         self.features['audio'] = np.array(audio_features)
         
-        # Final cleanup
         clear_gpu_memory()
         
-        # Save
         np.save(self.processed_dir / 'audio_features.npy', self.features['audio'])
         logger.info(f"Audio features shape: {self.features['audio'].shape}")
         logger.info(f"Failed extractions: {failed_count}/{len(self.all_participants)}")
         logger.info(get_gpu_memory_info())
     
     def step_4_train_models(self):
-        """Train and evaluate models."""
+        """Train and evaluate models including attention-based fusion."""
         logger.info("\n" + "=" * 50)
         logger.info("STEP 4: Training Models")
         logger.info("=" * 50)
@@ -453,6 +467,10 @@ class ExperimentPipeline:
         logger.info(f"  X_combined: {X_combined.shape}")
         logger.info(f"  y: {y.shape} ({y.mean():.1%} positive)")
         
+        # Store dimensions for neural network models
+        self.audio_dim = X_audio.shape[1]
+        self.text_dim = X_text.shape[1]
+        
         # Train XGBoost (Early Fusion)
         self._train_xgboost(X_combined, y, "xgboost_early_fusion")
         
@@ -462,7 +480,256 @@ class ExperimentPipeline:
         # Train with audio only
         self._train_xgboost(X_audio, y, "xgboost_audio_only")
         
+        # Train Attention Fusion Model (new SOTA approach)
+        self._train_attention_fusion(X_audio, X_text, y, "attention_fusion")
+        
+        # Train Normalized Late Fusion Model
+        self._train_normalized_fusion(X_audio, X_text, y, "normalized_fusion")
+        
         logger.info("[OK] Model training complete!")
+    
+    def _train_attention_fusion(
+        self,
+        X_audio: np.ndarray,
+        X_text: np.ndarray,
+        y: np.ndarray,
+        model_name: str
+    ):
+        """Train Attention-based Fusion Model with cross-validation."""
+        logger.info(f"\n--- Training {model_name} (Attention-based) ---")
+        
+        if not TORCH_AVAILABLE:
+            logger.warning("PyTorch not available, skipping attention fusion")
+            return
+        
+        from models.attention_fusion import AttentionFusionModel, AttentionFusionTrainer
+        from sklearn.model_selection import StratifiedKFold
+        from sklearn.preprocessing import StandardScaler
+        from torch.utils.data import TensorDataset, DataLoader
+        
+        # Scale features
+        scaler_audio = StandardScaler()
+        scaler_text = StandardScaler()
+        X_audio_scaled = scaler_audio.fit_transform(X_audio)
+        X_text_scaled = scaler_text.fit_transform(X_text)
+        
+        skf = StratifiedKFold(n_splits=self.n_splits, shuffle=True, random_state=self.random_state)
+        
+        fold_results = {
+            'f1': [], 'auroc': [], 'mcc': [],
+            'specificity': [], 'sensitivity': [],
+            'audio_weight': [], 'text_weight': []
+        }
+        
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        
+        for fold, (train_idx, val_idx) in enumerate(skf.split(X_audio_scaled, y)):
+            # Prepare data
+            X_audio_train = torch.FloatTensor(X_audio_scaled[train_idx])
+            X_audio_val = torch.FloatTensor(X_audio_scaled[val_idx])
+            X_text_train = torch.FloatTensor(X_text_scaled[train_idx])
+            X_text_val = torch.FloatTensor(X_text_scaled[val_idx])
+            y_train = torch.FloatTensor(y[train_idx])
+            y_val = torch.FloatTensor(y[val_idx])
+            
+            train_dataset = TensorDataset(X_audio_train, X_text_train, y_train)
+            val_dataset = TensorDataset(X_audio_val, X_text_val, y_val)
+            
+            train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
+            val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
+            
+            # Create model
+            model = AttentionFusionModel(
+                audio_dim=self.audio_dim,
+                text_dim=self.text_dim,
+                hidden_dim=128,  # Smaller for limited data
+                num_heads=4,
+                num_attention_layers=1,
+                dropout=0.4,
+                use_cross_attention=True,
+                use_gated_fusion=True
+            )
+            
+            # Create trainer
+            n_pos = int(y_train.sum())
+            n_neg = len(y_train) - n_pos
+            
+            trainer = AttentionFusionTrainer(
+                model=model,
+                n_positive=max(1, n_pos),
+                n_negative=max(1, n_neg),
+                learning_rate=1e-4,
+                weight_decay=0.01,
+                device=device
+            )
+            
+            # Train
+            history = trainer.train(
+                train_loader,
+                val_loader,
+                epochs=50,
+                patience=10,
+                verbose=False
+            )
+            
+            # Evaluate
+            metrics = trainer.evaluate(val_loader)
+            
+            fold_results['f1'].append(metrics['f1'])
+            fold_results['auroc'].append(metrics.get('auroc', 0.5))
+            fold_results['mcc'].append(metrics['mcc'])
+            fold_results['specificity'].append(metrics['specificity'])
+            fold_results['sensitivity'].append(metrics['recall'])
+            fold_results['audio_weight'].append(metrics.get('audio_weight', 0.5))
+            fold_results['text_weight'].append(metrics.get('text_weight', 0.5))
+            
+            logger.info(f"  Fold {fold+1}: F1={metrics['f1']:.3f}, "
+                       f"MCC={metrics['mcc']:.3f}, "
+                       f"Audio={metrics.get('audio_weight', 0.5):.2f}")
+            
+            # Cleanup
+            del model, trainer
+            clear_gpu_memory()
+        
+        # Aggregate results
+        self.results[model_name] = {
+            metric: {
+                'mean': float(np.mean(values)),
+                'std': float(np.std(values)),
+                'values': [float(v) for v in values]
+            }
+            for metric, values in fold_results.items()
+        }
+        
+        logger.info(f"\n  {model_name} SUMMARY:")
+        logger.info(f"    F1: {np.mean(fold_results['f1']):.3f} +/- {np.std(fold_results['f1']):.3f}")
+        logger.info(f"    MCC: {np.mean(fold_results['mcc']):.3f} +/- {np.std(fold_results['mcc']):.3f}")
+        logger.info(f"    Avg Audio Weight: {np.mean(fold_results['audio_weight']):.3f}")
+        logger.info(f"    Avg Text Weight: {np.mean(fold_results['text_weight']):.3f}")
+    
+    def _train_normalized_fusion(
+        self,
+        X_audio: np.ndarray,
+        X_text: np.ndarray,
+        y: np.ndarray,
+        model_name: str
+    ):
+        """Train Normalized Late Fusion Model with cross-validation."""
+        logger.info(f"\n--- Training {model_name} (Normalized with Gating) ---")
+        
+        if not TORCH_AVAILABLE:
+            logger.warning("PyTorch not available, skipping normalized fusion")
+            return
+        
+        from models.fusion_fixed import NormalizedLateFusionModel, FusionTrainer
+        from sklearn.model_selection import StratifiedKFold
+        from sklearn.preprocessing import StandardScaler
+        from torch.utils.data import TensorDataset, DataLoader
+        
+        # Scale features
+        scaler_audio = StandardScaler()
+        scaler_text = StandardScaler()
+        X_audio_scaled = scaler_audio.fit_transform(X_audio)
+        X_text_scaled = scaler_text.fit_transform(X_text)
+        
+        skf = StratifiedKFold(n_splits=self.n_splits, shuffle=True, random_state=self.random_state)
+        
+        fold_results = {
+            'f1': [], 'auroc': [], 'mcc': [],
+            'specificity': [], 'sensitivity': []
+        }
+        
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        
+        for fold, (train_idx, val_idx) in enumerate(skf.split(X_audio_scaled, y)):
+            # Prepare data
+            X_audio_train = torch.FloatTensor(X_audio_scaled[train_idx])
+            X_audio_val = torch.FloatTensor(X_audio_scaled[val_idx])
+            X_text_train = torch.FloatTensor(X_text_scaled[train_idx])
+            X_text_val = torch.FloatTensor(X_text_scaled[val_idx])
+            y_train = torch.FloatTensor(y[train_idx])
+            y_val = torch.FloatTensor(y[val_idx])
+            
+            train_dataset = TensorDataset(X_audio_train, X_text_train, y_train)
+            val_dataset = TensorDataset(X_audio_val, X_text_val, y_val)
+            
+            train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
+            val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
+            
+            # Create model
+            model = NormalizedLateFusionModel(
+                audio_dim=self.audio_dim,
+                text_dim=self.text_dim,
+                hidden_dim=128,
+                use_gating=True,
+                dropout=0.4
+            )
+            
+            # Create trainer
+            n_pos = int(y_train.sum())
+            n_neg = len(y_train) - n_pos
+            
+            trainer = FusionTrainer(
+                model=model,
+                n_positive=max(1, n_pos),
+                n_negative=max(1, n_neg),
+                learning_rate=1e-3,
+                weight_decay=0.01,
+                device=device
+            )
+            
+            # Train
+            history = trainer.train(
+                train_loader,
+                val_loader,
+                epochs=50,
+                patience=10,
+                verbose=False
+            )
+            
+            # Evaluate
+            metrics = trainer.evaluate(val_loader)
+            
+            fold_results['f1'].append(metrics['f1'])
+            fold_results['mcc'].append(metrics['mcc'])
+            fold_results['specificity'].append(metrics['specificity'])
+            fold_results['sensitivity'].append(metrics['recall'])
+            
+            # Compute AUROC
+            model.eval()
+            with torch.no_grad():
+                y_proba = model.predict_proba(X_audio_val.to(device), X_text_val.to(device))
+                y_proba_np = y_proba.cpu().numpy()
+            
+            from sklearn.metrics import roc_auc_score
+            try:
+                auroc = roc_auc_score(y[val_idx], y_proba_np)
+            except:
+                auroc = 0.5
+            fold_results['auroc'].append(auroc)
+            
+            logger.info(f"  Fold {fold+1}: F1={metrics['f1']:.3f}, "
+                       f"AUROC={auroc:.3f}, "
+                       f"MCC={metrics['mcc']:.3f}")
+            
+            # Cleanup
+            del model, trainer
+            clear_gpu_memory()
+        
+        # Aggregate results
+        self.results[model_name] = {
+            metric: {
+                'mean': float(np.mean(values)),
+                'std': float(np.std(values)),
+                'values': [float(v) for v in values]
+            }
+            for metric, values in fold_results.items()
+        }
+        
+        logger.info(f"\n  {model_name} SUMMARY:")
+        logger.info(f"    F1: {np.mean(fold_results['f1']):.3f} +/- {np.std(fold_results['f1']):.3f}")
+        logger.info(f"    AUROC: {np.mean(fold_results['auroc']):.3f} +/- {np.std(fold_results['auroc']):.3f}")
+        logger.info(f"    MCC: {np.mean(fold_results['mcc']):.3f} +/- {np.std(fold_results['mcc']):.3f}")
     
     def _train_xgboost(self, X: np.ndarray, y: np.ndarray, model_name: str):
         """Train XGBoost with cross-validation and calibration."""

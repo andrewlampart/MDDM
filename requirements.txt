@@ -27,6 +27,9 @@ opensmile>=2.5.0
 
 # NLP
 sentence-transformers>=2.2.0
+nltk>=3.8.0
+vaderSentiment>=3.3.2
+textblob>=0.17.0
 
 # ML & Evaluation
 scikit-learn>=1.4.0

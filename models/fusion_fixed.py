@@ -50,6 +50,236 @@ def clear_gpu_memory():
         torch.cuda.synchronize()
 
 
+class ModalityNormalizer(nn.Module):
+    """
+    Normalize and project modalities to a common embedding space.
+    
+    Solves the negative synergy problem by:
+    1. LayerNorm for each modality (stabilizes scale)
+    2. Projection to common dimension (allows fair comparison)
+    3. Optional learned weighting (gated fusion)
+    
+    This addresses the -11.8% synergy issue where audio (786-dim) 
+    was dominating text (768-dim) due to scale mismatch.
+    """
+    
+    def __init__(
+        self,
+        audio_dim: int = 788,
+        text_dim: int = 768,
+        hidden_dim: int = 256,
+        use_gating: bool = True,
+        dropout: float = 0.1
+    ):
+        """
+        Initialize modality normalizer.
+        
+        Args:
+            audio_dim: Dimension of audio features (Wav2Vec + prosody)
+            text_dim: Dimension of text features (BERT)
+            hidden_dim: Common embedding dimension for both modalities
+            use_gating: Whether to use learned gating (adaptive weights)
+            dropout: Dropout rate after projection
+        """
+        super().__init__()
+        
+        self.hidden_dim = hidden_dim
+        self.use_gating = use_gating
+        
+        # Audio projection with LayerNorm
+        self.audio_norm = nn.LayerNorm(audio_dim)
+        self.audio_proj = nn.Sequential(
+            nn.Linear(audio_dim, hidden_dim * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.LayerNorm(hidden_dim)
+        )
+        
+        # Text projection with LayerNorm
+        self.text_norm = nn.LayerNorm(text_dim)
+        self.text_proj = nn.Sequential(
+            nn.Linear(text_dim, hidden_dim * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.LayerNorm(hidden_dim)
+        )
+        
+        # Gated fusion - learns optimal weights for each modality
+        if use_gating:
+            self.gate = nn.Sequential(
+                nn.Linear(hidden_dim * 2, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, 2),
+                nn.Softmax(dim=-1)
+            )
+        
+        self._init_weights()
+    
+    def _init_weights(self):
+        """Initialize weights using Xavier/Glorot."""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+    
+    def forward(
+        self,
+        audio_features: torch.Tensor,
+        text_features: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        """
+        Normalize and project modalities.
+        
+        Args:
+            audio_features: (batch_size, audio_dim)
+            text_features: (batch_size, text_dim)
+            
+        Returns:
+            Tuple of:
+            - audio_projected: (batch_size, hidden_dim)
+            - text_projected: (batch_size, hidden_dim)
+            - gate_weights: (batch_size, 2) if use_gating else None
+        """
+        # Normalize and project
+        audio_normed = self.audio_norm(audio_features)
+        audio_proj = self.audio_proj(audio_normed)
+        
+        text_normed = self.text_norm(text_features)
+        text_proj = self.text_proj(text_normed)
+        
+        # Compute gating weights if enabled
+        gate_weights = None
+        if self.use_gating:
+            combined = torch.cat([audio_proj, text_proj], dim=-1)
+            gate_weights = self.gate(combined)  # (batch, 2)
+        
+        return audio_proj, text_proj, gate_weights
+    
+    def fuse(
+        self,
+        audio_features: torch.Tensor,
+        text_features: torch.Tensor,
+        fusion_type: str = 'gated'
+    ) -> torch.Tensor:
+        """
+        Normalize, project, and fuse modalities.
+        
+        Args:
+            audio_features: (batch_size, audio_dim)
+            text_features: (batch_size, text_dim)
+            fusion_type: 'concat', 'sum', 'gated', or 'attention'
+            
+        Returns:
+            fused: (batch_size, hidden_dim) for sum/gated
+                   (batch_size, hidden_dim * 2) for concat
+        """
+        audio_proj, text_proj, gate_weights = self.forward(audio_features, text_features)
+        
+        if fusion_type == 'concat':
+            return torch.cat([audio_proj, text_proj], dim=-1)
+        
+        elif fusion_type == 'sum':
+            return audio_proj + text_proj
+        
+        elif fusion_type == 'gated' and self.use_gating:
+            # Weighted sum based on learned gates
+            w_audio = gate_weights[:, 0:1]  # (batch, 1)
+            w_text = gate_weights[:, 1:2]   # (batch, 1)
+            return w_audio * audio_proj + w_text * text_proj
+        
+        else:
+            # Default to mean
+            return (audio_proj + text_proj) / 2
+
+
+class NormalizedLateFusionModel(nn.Module):
+    """
+    Late fusion model with proper modality normalization.
+    
+    Uses ModalityNormalizer to ensure balanced contribution from
+    audio and text modalities before fusion.
+    """
+    
+    def __init__(
+        self,
+        audio_dim: int = 788,
+        text_dim: int = 768,
+        hidden_dim: int = 256,
+        use_gating: bool = True,
+        dropout: float = 0.3
+    ):
+        super().__init__()
+        
+        self.normalizer = ModalityNormalizer(
+            audio_dim=audio_dim,
+            text_dim=text_dim,
+            hidden_dim=hidden_dim,
+            use_gating=use_gating,
+            dropout=dropout * 0.5
+        )
+        
+        # Classifier on normalized features
+        classifier_input = hidden_dim * 2 if not use_gating else hidden_dim
+        
+        self.classifier = nn.Sequential(
+            nn.Linear(classifier_input, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout * 0.5),
+            nn.Linear(hidden_dim // 2, 1)
+        )
+        
+        self.use_gating = use_gating
+        self._init_weights()
+    
+    def _init_weights(self):
+        for m in self.classifier.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+    
+    def forward(
+        self,
+        audio_features: torch.Tensor,
+        text_features: torch.Tensor
+    ) -> torch.Tensor:
+        """Forward pass with normalized fusion."""
+        if self.use_gating:
+            fused = self.normalizer.fuse(audio_features, text_features, fusion_type='gated')
+        else:
+            fused = self.normalizer.fuse(audio_features, text_features, fusion_type='concat')
+        
+        logits = self.classifier(fused).squeeze(-1)
+        return logits
+    
+    def predict_proba(
+        self,
+        audio_features: torch.Tensor,
+        text_features: torch.Tensor
+    ) -> torch.Tensor:
+        """Get probabilities."""
+        logits = self.forward(audio_features, text_features)
+        return torch.sigmoid(logits)
+    
+    def get_gate_weights(
+        self,
+        audio_features: torch.Tensor,
+        text_features: torch.Tensor
+    ) -> Optional[torch.Tensor]:
+        """Get the learned modality weights for interpretability."""
+        if not self.use_gating:
+            return None
+        _, _, weights = self.normalizer(audio_features, text_features)
+        return weights
+
+
 class LateFusionModelFixed(nn.Module):
     """
     Properly regularized late fusion model.
@@ -528,7 +758,7 @@ def create_fusion_model(
     Args:
         audio_dim: Audio feature dimension
         text_dim: Text feature dimension
-        model_type: 'late' or 'early'
+        model_type: 'late', 'early', or 'normalized' (recommended)
         **kwargs: Additional model arguments
         
     Returns:
@@ -546,8 +776,14 @@ def create_fusion_model(
             text_dim=text_dim,
             **kwargs
         )
+    elif model_type == 'normalized':
+        return NormalizedLateFusionModel(
+            audio_dim=audio_dim,
+            text_dim=text_dim,
+            **kwargs
+        )
     else:
-        raise ValueError(f"Unknown model_type: {model_type}")
+        raise ValueError(f"Unknown model_type: {model_type}. Use 'late', 'early', or 'normalized'")
 
 
 if __name__ == "__main__":
@@ -555,32 +791,56 @@ if __name__ == "__main__":
     
     # Create dummy data
     batch_size = 32
-    audio_dim = 42
+    audio_dim = 788  # Wav2Vec (768) + prosody (20)
     text_dim = 768
     
     audio = torch.randn(batch_size, audio_dim)
     text = torch.randn(batch_size, text_dim)
     labels = torch.randint(0, 2, (batch_size,))
     
-    # Test Late Fusion
-    print("\n1. Testing LateFusionModelFixed:")
+    # Test ModalityNormalizer
+    print("\n1. Testing ModalityNormalizer:")
+    normalizer = ModalityNormalizer(audio_dim=audio_dim, text_dim=text_dim)
+    audio_proj, text_proj, gates = normalizer(audio, text)
+    print(f"   Input: audio={audio.shape}, text={text.shape}")
+    print(f"   Projected: audio={audio_proj.shape}, text={text_proj.shape}")
+    print(f"   Gate weights shape: {gates.shape}")
+    print(f"   Gate weights sample: audio={gates[0,0]:.3f}, text={gates[0,1]:.3f}")
+    
+    # Test fusion modes
+    fused_gated = normalizer.fuse(audio, text, fusion_type='gated')
+    fused_concat = normalizer.fuse(audio, text, fusion_type='concat')
+    print(f"   Fused (gated): {fused_gated.shape}")
+    print(f"   Fused (concat): {fused_concat.shape}")
+    print(f"   [OK] ModalityNormalizer works!")
+    
+    # Test NormalizedLateFusionModel
+    print("\n2. Testing NormalizedLateFusionModel:")
+    model_normalized = NormalizedLateFusionModel(audio_dim=audio_dim, text_dim=text_dim)
+    logits_norm = model_normalized(audio, text)
+    print(f"   Output logits: {logits_norm.shape}")
+    gate_w = model_normalized.get_gate_weights(audio, text)
+    print(f"   Learned gate weights: audio={gate_w.mean(0)[0]:.3f}, text={gate_w.mean(0)[1]:.3f}")
+    print(f"   [OK] NormalizedLateFusionModel works!")
+    
+    # Test Late Fusion (original)
+    print("\n3. Testing LateFusionModelFixed:")
     model = LateFusionModelFixed(audio_dim=audio_dim, text_dim=text_dim)
     logits = model(audio, text)
-    print(f"   Input: audio={audio.shape}, text={text.shape}")
     print(f"   Output logits: {logits.shape}")
     print(f"   [OK] LateFusionModelFixed works!")
     
     # Test Early Fusion
-    print("\n2. Testing EarlyFusionModelFixed:")
+    print("\n4. Testing EarlyFusionModelFixed:")
     model_early = EarlyFusionModelFixed(audio_dim=audio_dim, text_dim=text_dim)
     logits_early = model_early(audio, text)
     print(f"   Output logits: {logits_early.shape}")
     print(f"   [OK] EarlyFusionModelFixed works!")
     
-    # Test Trainer
-    print("\n3. Testing FusionTrainer:")
+    # Test Trainer with normalized model
+    print("\n5. Testing FusionTrainer with NormalizedLateFusionModel:")
     trainer = FusionTrainer(
-        model=model,
+        model=model_normalized,
         n_positive=10,
         n_negative=22,
         device='cpu'
@@ -600,5 +860,13 @@ if __name__ == "__main__":
     metrics = trainer.evaluate(loader)
     print(f"   Val metrics: F1={metrics['f1']:.3f}, MCC={metrics['mcc']:.3f}")
     print(f"   [OK] Training works!")
+    
+    # Test factory function
+    print("\n6. Testing create_fusion_model factory:")
+    for model_type in ['late', 'early', 'normalized']:
+        m = create_fusion_model(audio_dim=audio_dim, text_dim=text_dim, model_type=model_type)
+        out = m(audio, text)
+        print(f"   {model_type}: {type(m).__name__} -> {out.shape}")
+    print(f"   [OK] Factory works!")
     
     print("\n[OK] All fusion model tests passed!")
