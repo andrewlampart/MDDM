@@ -1,0 +1,61 @@
+======================================================================
+FEATURE DIAGNOSTICS REPORT
+======================================================================
+
+[1] DATASET OVERVIEW
+----------------------------------------
+  Samples: 189
+  Audio features: 838
+  Text features: 560
+  Class balance: 29.6% positive
+
+[2] NaN/Inf CHECK
+----------------------------------------
+  AUDIO: NaN=0, Inf=0 [OK]
+  TEXT: NaN=0, Inf=0 [OK]
+
+[3] FEATURE STATISTICS
+----------------------------------------
+  AUDIO:
+    Range: [-605.6273, 4462.4844]
+    Mean: 8.9503, Std: 138.9204
+    Zero-variance features: 0
+  TEXT:
+    Range: [-0.5000, 4863.0000]
+    Mean: 2.7729, Std: 74.4339
+    Zero-variance features: 1
+
+[4] TOP CORRELATED FEATURES (with depression label)
+----------------------------------------
+  AUDIO (avg correlation: 0.0406):
+    Feature  331: r=0.1773 *
+    Feature  455: r=0.1701 *
+    Feature  769: r=0.1606 *
+    Feature  779: r=0.1584 *
+    Feature  252: r=0.1561 *
+  TEXT (avg correlation: 0.0667):
+    Feature  347: r=0.2799 ***
+    Feature  324: r=0.2759 ***
+    Feature  299: r=0.2413 ***
+    Feature  544: r=0.2222 **
+    Feature  187: r=0.2139 **
+
+[5] CLASS SEPARABILITY (Fisher ratio)
+----------------------------------------
+  AUDIO: avg Fisher=0.0054, discriminative features=0
+  TEXT: avg Fisher=0.0165, discriminative features=8
+
+[6] MODALITY SCALE
+----------------------------------------
+  Audio scale (std): 138.9204
+  Text scale (std): 74.4339
+  Scale ratio: 1.87
+
+[!] WARNINGS
+----------------------------------------
+  - Text has 1 zero-variance features
+  - Text has 1 zero-variance features
+
+======================================================================
+STATUS: WARNINGS - Consider addressing before training
+======================================================================

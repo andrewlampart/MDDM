@@ -180,6 +180,47 @@ class Config:
     OPTUNA_TIMEOUT: int = 3600  # 1 hour max
     OPTUNA_METRIC: str = "f1"
     
+    # ===================
+    # Calibration parameters (NEW)
+    # ===================
+    # Temperature Scaling - fixes AUROC issues in neural networks
+    USE_TEMPERATURE_SCALING: bool = True
+    TEMPERATURE_BOUNDS: tuple = (0.1, 10.0)  # Search range for temperature
+    
+    # Threshold Optimization - finds optimal classification threshold
+    USE_THRESHOLD_OPTIMIZATION: bool = True
+    OPTIMAL_THRESHOLD_METRIC: str = 'f1'  # Options: 'f1', 'balanced', 'youden'
+    THRESHOLD_SEARCH_RANGE: tuple = (0.1, 0.9)  # Search range for threshold
+    THRESHOLD_SEARCH_STEP: float = 0.01
+    
+    # ===================
+    # Ensemble parameters (NEW)
+    # ===================
+    USE_ENSEMBLE_VOTING: bool = True
+    ENSEMBLE_N_MODELS: int = 5  # Number of models in ensemble (same as n_splits)
+    ENSEMBLE_METHOD: str = 'mean'  # Options: 'mean', 'median', 'vote'
+    
+    # ===================
+    # Feature diagnostics (NEW)
+    # ===================
+    RUN_FEATURE_DIAGNOSTICS: bool = True
+    WARN_ON_HIGH_NAN_RATIO: float = 0.01  # Warn if >1% NaN
+    MIN_FEATURE_CORRELATION: float = 0.05  # Features below this may be noise
+    
+    # ===================
+    # Attention Fusion Model parameters (NEW)
+    # ===================
+    ATTENTION_HIDDEN_DIM: int = 128
+    ATTENTION_NUM_HEADS: int = 4
+    ATTENTION_NUM_LAYERS: int = 1
+    ATTENTION_DROPOUT: float = 0.4
+    ATTENTION_USE_CROSS: bool = True
+    ATTENTION_USE_GATED: bool = True
+    ATTENTION_LEARNING_RATE: float = 1e-4
+    ATTENTION_WEIGHT_DECAY: float = 0.01
+    ATTENTION_EPOCHS: int = 50
+    ATTENTION_PATIENCE: int = 10
+    
     def __post_init__(self):
         """Create all necessary directories"""
         directories = [

@@ -532,6 +532,9 @@ class AttentionFusionTrainer:
     - Label smoothing
     - Gradient accumulation for small batches
     - Mixed precision training
+    - Temperature scaling calibration (NEW)
+    - Optimal threshold selection (NEW)
+    - AUROC tracking (NEW)
     """
     
     def __init__(
@@ -543,10 +546,14 @@ class AttentionFusionTrainer:
         weight_decay: float = 0.01,
         label_smoothing: float = 0.1,
         device: str = 'cpu',
-        use_mixed_precision: bool = True
+        use_mixed_precision: bool = True,
+        use_temperature_scaling: bool = True,
+        use_threshold_optimization: bool = True
     ):
         self.device = device
         self.use_mixed_precision = use_mixed_precision and device == 'cuda'
+        self.use_temperature_scaling = use_temperature_scaling
+        self.use_threshold_optimization = use_threshold_optimization
         
         # Setup GPU
         if device == 'cuda':
@@ -586,16 +593,265 @@ class AttentionFusionTrainer:
             self.scaler = torch.amp.GradScaler('cuda')
             self.amp_dtype = torch.bfloat16 if USE_BF16 else torch.float16
         
+        # Calibration components (NEW)
+        self.temperature = 1.0  # Temperature for scaling
+        self.optimal_threshold = 0.5  # Optimal classification threshold
+        self.calibrated = False
+        
         logger.info(f"AttentionFusionTrainer initialized:")
         logger.info(f"  pos_weight: {pos_weight:.2f}")
         logger.info(f"  label_smoothing: {label_smoothing}")
         logger.info(f"  device: {device}")
+        logger.info(f"  temperature_scaling: {use_temperature_scaling}")
+        logger.info(f"  threshold_optimization: {use_threshold_optimization}")
     
     def _smooth_labels(self, labels: torch.Tensor) -> torch.Tensor:
         """Apply label smoothing."""
         if self.label_smoothing > 0:
             labels = labels * (1 - self.label_smoothing) + 0.5 * self.label_smoothing
         return labels
+    
+    def get_logits(
+        self,
+        data_loader: torch.utils.data.DataLoader
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Extract raw logits and labels from data loader.
+        
+        Used for calibration fitting.
+        
+        Args:
+            data_loader: DataLoader with (audio, text, labels) batches
+            
+        Returns:
+            Tuple of (logits, labels) as numpy arrays
+        """
+        self.model.eval()
+        all_logits = []
+        all_labels = []
+        
+        with torch.no_grad():
+            for batch in data_loader:
+                audio, text, labels = batch
+                audio = audio.to(self.device)
+                text = text.to(self.device)
+                
+                logits = self.model(audio, text)
+                
+                all_logits.extend(logits.cpu().numpy())
+                all_labels.extend(labels.numpy())
+        
+        return np.array(all_logits), np.array(all_labels)
+    
+    def fit_temperature(
+        self,
+        val_loader: torch.utils.data.DataLoader,
+        bounds: Tuple[float, float] = (0.1, 10.0)
+    ) -> float:
+        """
+        Fit temperature scaling parameter on validation set.
+        
+        Temperature scaling adjusts model confidence:
+        - T > 1: Less confident (spreads probabilities)
+        - T < 1: More confident (sharpens probabilities)
+        
+        This helps fix AUROC issues where model has good F1 but poor ranking.
+        
+        Args:
+            val_loader: Validation data loader
+            bounds: (min, max) bounds for temperature search
+            
+        Returns:
+            Optimal temperature value
+        """
+        if not self.use_temperature_scaling:
+            logger.info("Temperature scaling disabled")
+            return 1.0
+        
+        from scipy.optimize import minimize_scalar
+        
+        # Get logits and labels
+        logits, labels = self.get_logits(val_loader)
+        
+        def nll_loss(T: float) -> float:
+            """Negative log likelihood with temperature scaling."""
+            if T <= 0:
+                return np.inf
+            scaled = logits / T
+            proba = 1 / (1 + np.exp(-np.clip(scaled, -500, 500)))
+            proba = np.clip(proba, 1e-7, 1 - 1e-7)
+            loss = -np.mean(labels * np.log(proba) + (1 - labels) * np.log(1 - proba))
+            return loss
+        
+        # Store NLL before calibration
+        nll_before = nll_loss(1.0)
+        
+        # Optimize temperature
+        result = minimize_scalar(nll_loss, bounds=bounds, method='bounded')
+        self.temperature = result.x
+        
+        # Store NLL after calibration
+        nll_after = nll_loss(self.temperature)
+        
+        logger.info(f"Temperature scaling fitted:")
+        logger.info(f"  Optimal temperature: {self.temperature:.4f}")
+        logger.info(f"  NLL: {nll_before:.4f} -> {nll_after:.4f} (improvement: {nll_before - nll_after:.4f})")
+        
+        self.calibrated = True
+        return self.temperature
+    
+    def fit_optimal_threshold(
+        self,
+        val_loader: torch.utils.data.DataLoader,
+        metric: str = 'f1'
+    ) -> float:
+        """
+        Find optimal classification threshold on validation set.
+        
+        Instead of using default 0.5, searches for threshold that maximizes
+        the specified metric.
+        
+        Args:
+            val_loader: Validation data loader
+            metric: Metric to optimize ('f1', 'balanced', 'youden')
+            
+        Returns:
+            Optimal threshold value
+        """
+        if not self.use_threshold_optimization:
+            logger.info("Threshold optimization disabled")
+            return 0.5
+        
+        from sklearn.metrics import f1_score, confusion_matrix
+        
+        # Get calibrated probabilities
+        logits, labels = self.get_logits(val_loader)
+        
+        # Apply temperature scaling if calibrated
+        if self.calibrated and self.temperature != 1.0:
+            proba = 1 / (1 + np.exp(-logits / self.temperature))
+        else:
+            proba = 1 / (1 + np.exp(-logits))
+        
+        # Search for optimal threshold
+        thresholds = np.arange(0.1, 0.9, 0.01)
+        best_score = -np.inf
+        best_threshold = 0.5
+        
+        for threshold in thresholds:
+            y_pred = (proba > threshold).astype(int)
+            
+            if len(np.unique(y_pred)) < 2:
+                continue
+            
+            if metric == 'f1':
+                score = f1_score(labels, y_pred, zero_division=0)
+            elif metric == 'balanced':
+                cm = confusion_matrix(labels, y_pred)
+                if cm.shape == (2, 2):
+                    tn, fp, fn, tp = cm.ravel()
+                    sens = tp / (tp + fn) if (tp + fn) > 0 else 0
+                    spec = tn / (tn + fp) if (tn + fp) > 0 else 0
+                    score = (sens + spec) / 2
+                else:
+                    score = 0.0
+            elif metric == 'youden':
+                cm = confusion_matrix(labels, y_pred)
+                if cm.shape == (2, 2):
+                    tn, fp, fn, tp = cm.ravel()
+                    sens = tp / (tp + fn) if (tp + fn) > 0 else 0
+                    spec = tn / (tn + fp) if (tn + fp) > 0 else 0
+                    score = sens + spec - 1
+                else:
+                    score = 0.0
+            else:
+                score = f1_score(labels, y_pred, zero_division=0)
+            
+            if score > best_score:
+                best_score = score
+                best_threshold = threshold
+        
+        self.optimal_threshold = best_threshold
+        
+        logger.info(f"Threshold optimization ({metric}):")
+        logger.info(f"  Optimal threshold: {self.optimal_threshold:.3f} (score={best_score:.4f})")
+        
+        return self.optimal_threshold
+    
+    def calibrate(
+        self,
+        val_loader: torch.utils.data.DataLoader,
+        threshold_metric: str = 'f1'
+    ) -> Dict[str, float]:
+        """
+        Full calibration: temperature scaling + threshold optimization.
+        
+        Call this after training to calibrate the model.
+        
+        Args:
+            val_loader: Validation data loader
+            threshold_metric: Metric for threshold optimization
+            
+        Returns:
+            Dict with calibration info
+        """
+        logger.info("=" * 50)
+        logger.info("CALIBRATING MODEL")
+        logger.info("=" * 50)
+        
+        # Step 1: Temperature scaling
+        temperature = self.fit_temperature(val_loader)
+        
+        # Step 2: Threshold optimization
+        threshold = self.fit_optimal_threshold(val_loader, metric=threshold_metric)
+        
+        logger.info("=" * 50)
+        logger.info(f"Calibration complete: T={temperature:.4f}, threshold={threshold:.3f}")
+        logger.info("=" * 50)
+        
+        return {
+            'temperature': temperature,
+            'optimal_threshold': threshold,
+            'calibrated': True
+        }
+    
+    def predict_proba_calibrated(
+        self,
+        data_loader: torch.utils.data.DataLoader
+    ) -> np.ndarray:
+        """
+        Get calibrated probabilities using temperature scaling.
+        
+        Args:
+            data_loader: Data loader
+            
+        Returns:
+            Calibrated probabilities
+        """
+        logits, _ = self.get_logits(data_loader)
+        
+        if self.calibrated and self.temperature != 1.0:
+            proba = 1 / (1 + np.exp(-logits / self.temperature))
+        else:
+            proba = 1 / (1 + np.exp(-logits))
+        
+        return proba
+    
+    def predict_calibrated(
+        self,
+        data_loader: torch.utils.data.DataLoader
+    ) -> np.ndarray:
+        """
+        Get calibrated binary predictions using optimal threshold.
+        
+        Args:
+            data_loader: Data loader
+            
+        Returns:
+            Binary predictions
+        """
+        proba = self.predict_proba_calibrated(data_loader)
+        return (proba > self.optimal_threshold).astype(int)
     
     def train_epoch(
         self,
@@ -644,14 +900,27 @@ class AttentionFusionTrainer:
     
     def evaluate(
         self,
-        val_loader: torch.utils.data.DataLoader
+        val_loader: torch.utils.data.DataLoader,
+        use_calibration: bool = True
     ) -> Dict[str, float]:
-        """Evaluate on validation set."""
+        """
+        Evaluate on validation set.
+        
+        Args:
+            val_loader: Validation data loader
+            use_calibration: Whether to use calibrated predictions (if available)
+            
+        Returns:
+            Dict with all metrics including AUROC
+        """
+        from sklearn.metrics import roc_auc_score
+        
         self.model.eval()
         
         all_labels = []
-        all_preds = []
+        all_logits = []
         all_probs = []
+        all_probs_calibrated = []
         total_loss = 0.0
         n_batches = 0
         
@@ -666,17 +935,27 @@ class AttentionFusionTrainer:
                 loss = self.criterion(logits, labels)
                 
                 probs = torch.sigmoid(logits)
-                preds = (probs > 0.5).long()
                 
                 all_labels.extend(labels.cpu().numpy())
-                all_preds.extend(preds.cpu().numpy())
+                all_logits.extend(logits.cpu().numpy())
                 all_probs.extend(probs.cpu().numpy())
                 
                 total_loss += loss.item()
                 n_batches += 1
         
         all_labels = np.array(all_labels)
-        all_preds = np.array(all_preds)
+        all_logits = np.array(all_logits)
+        all_probs = np.array(all_probs)
+        
+        # Apply temperature scaling if calibrated
+        if use_calibration and self.calibrated and self.temperature != 1.0:
+            all_probs_calibrated = 1 / (1 + np.exp(-all_logits / self.temperature))
+        else:
+            all_probs_calibrated = all_probs
+        
+        # Use optimal threshold if calibrated, else 0.5
+        threshold = self.optimal_threshold if (use_calibration and self.calibrated) else 0.5
+        all_preds = (all_probs_calibrated > threshold).astype(int)
         
         # Metrics
         tp = ((all_labels == 1) & (all_preds == 1)).sum()
@@ -692,6 +971,18 @@ class AttentionFusionTrainer:
         denom = np.sqrt((tp+fp) * (tp+fn) * (tn+fp) * (tn+fn))
         mcc = (tp*tn - fp*fn) / denom if denom > 0 else 0
         
+        # AUROC (NEW - critical for calibration assessment)
+        try:
+            auroc = roc_auc_score(all_labels, all_probs_calibrated)
+        except ValueError:
+            auroc = 0.5
+        
+        # AUROC before calibration (for comparison)
+        try:
+            auroc_raw = roc_auc_score(all_labels, all_probs)
+        except ValueError:
+            auroc_raw = 0.5
+        
         # Get modality importance
         importance = {}
         if hasattr(self.model, 'get_modality_importance'):
@@ -706,7 +997,11 @@ class AttentionFusionTrainer:
             'recall': recall,
             'specificity': specificity,
             'mcc': mcc,
-            'tp': tp, 'tn': tn, 'fp': fp, 'fn': fn,
+            'auroc': auroc,
+            'auroc_raw': auroc_raw,
+            'threshold': threshold,
+            'temperature': self.temperature,
+            'tp': int(tp), 'tn': int(tn), 'fp': int(fp), 'fn': int(fn),
             **importance
         }
     
@@ -717,14 +1012,31 @@ class AttentionFusionTrainer:
         epochs: int = 100,
         patience: int = 20,
         save_path: Optional[Path] = None,
-        verbose: bool = True
+        verbose: bool = True,
+        calibrate_after_training: bool = True
     ) -> Dict[str, List[float]]:
-        """Full training loop."""
+        """
+        Full training loop with optional calibration.
+        
+        Args:
+            train_loader: Training data loader
+            val_loader: Validation data loader
+            epochs: Maximum epochs
+            patience: Early stopping patience
+            save_path: Path to save best model
+            verbose: Print progress
+            calibrate_after_training: Whether to calibrate model after training
+            
+        Returns:
+            Training history dict
+        """
         history = {
             'train_loss': [],
             'val_loss': [],
             'val_f1': [],
             'val_mcc': [],
+            'val_auroc': [],  # NEW
+            'val_specificity': [],  # NEW
             'audio_weight': [],
             'text_weight': []
         }
@@ -735,12 +1047,14 @@ class AttentionFusionTrainer:
         
         for epoch in range(epochs):
             train_loss = self.train_epoch(train_loader)
-            val_metrics = self.evaluate(val_loader)
+            val_metrics = self.evaluate(val_loader, use_calibration=False)  # Raw during training
             
             history['train_loss'].append(train_loss)
             history['val_loss'].append(val_metrics['loss'])
             history['val_f1'].append(val_metrics['f1'])
             history['val_mcc'].append(val_metrics['mcc'])
+            history['val_auroc'].append(val_metrics.get('auroc', 0.5))
+            history['val_specificity'].append(val_metrics.get('specificity', 0.5))
             history['audio_weight'].append(val_metrics.get('audio_weight', 0.5))
             history['text_weight'].append(val_metrics.get('text_weight', 0.5))
             
@@ -758,9 +1072,9 @@ class AttentionFusionTrainer:
                     f"Epoch {epoch+1}/{epochs} | "
                     f"Loss: {train_loss:.4f} | "
                     f"F1: {val_metrics['f1']:.4f} | "
+                    f"AUROC: {val_metrics.get('auroc', 0.5):.4f} | "
                     f"MCC: {val_metrics['mcc']:.4f} | "
-                    f"Audio: {val_metrics.get('audio_weight', 0.5):.2f} | "
-                    f"Text: {val_metrics.get('text_weight', 0.5):.2f}"
+                    f"Audio: {val_metrics.get('audio_weight', 0.5):.2f}"
                 )
             
             if patience_counter >= patience:
@@ -770,6 +1084,22 @@ class AttentionFusionTrainer:
         if best_state is not None:
             self.model.load_state_dict(best_state)
             logger.info(f"Loaded best model with F1={best_f1:.4f}")
+        
+        # Calibrate model after training (NEW)
+        if calibrate_after_training and (self.use_temperature_scaling or self.use_threshold_optimization):
+            calibration_info = self.calibrate(val_loader)
+            history['calibration'] = calibration_info
+            
+            # Evaluate with calibration
+            calibrated_metrics = self.evaluate(val_loader, use_calibration=True)
+            history['calibrated_f1'] = calibrated_metrics['f1']
+            history['calibrated_auroc'] = calibrated_metrics['auroc']
+            history['calibrated_specificity'] = calibrated_metrics['specificity']
+            
+            logger.info(f"Post-calibration metrics:")
+            logger.info(f"  F1: {val_metrics['f1']:.4f} -> {calibrated_metrics['f1']:.4f}")
+            logger.info(f"  AUROC: {val_metrics.get('auroc', 0.5):.4f} -> {calibrated_metrics['auroc']:.4f}")
+            logger.info(f"  Specificity: {val_metrics.get('specificity', 0.5):.4f} -> {calibrated_metrics['specificity']:.4f}")
         
         return history
 

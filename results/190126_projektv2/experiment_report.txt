@@ -1,6 +1,6 @@
 ======================================================================
 MDDM EXPERIMENT REPORT
-Generated: 2026-01-19 14:23:12
+Generated: 2026-01-19 00:20:32
 ======================================================================
 
 DATASET:
@@ -20,17 +20,17 @@ Model                                F1    AUROC      MCC     Spec
 xgboost_early_fusion              0.282    0.663    0.129    0.895
 xgboost_text_only                 0.420    0.690    0.305    0.917
 xgboost_audio_only                0.297    0.525    0.052    0.775
-attention_fusion                  0.516    0.593    0.268    0.537
-normalized_fusion                 0.284    0.562   -0.004    0.715
+attention_fusion                  0.432    0.500    0.134    0.579
+normalized_fusion                 0.373    0.614    0.134    0.774
 ----------------------------------------------------------------------
 
 BEST MODEL: attention_fusion
-  F1 = 0.516 +/- 0.031
+  F1 = 0.432 +/- 0.214
 
 SUCCESS CRITERIA CHECK:
-  F1 >= 0.65: FAIL (0.516)
-  AUROC >= 0.75: FAIL (0.593)
-  MCC > 0: PASS (0.268)
-  Specificity >= 0.70: FAIL (0.537)
+  F1 >= 0.65: FAIL (0.432)
+  AUROC >= 0.75: FAIL (0.500)
+  MCC > 0: PASS (0.134)
+  Specificity >= 0.70: FAIL (0.579)
 
 ======================================================================

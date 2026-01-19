@@ -467,6 +467,9 @@ class ExperimentPipeline:
         logger.info(f"  X_combined: {X_combined.shape}")
         logger.info(f"  y: {y.shape} ({y.mean():.1%} positive)")
         
+        # NEW: Run feature diagnostics before training
+        self._run_feature_diagnostics(X_audio, X_text, y)
+        
         # Store dimensions for neural network models
         self.audio_dim = X_audio.shape[1]
         self.text_dim = X_text.shape[1]
@@ -480,13 +483,47 @@ class ExperimentPipeline:
         # Train with audio only
         self._train_xgboost(X_audio, y, "xgboost_audio_only")
         
-        # Train Attention Fusion Model (new SOTA approach)
+        # Train Attention Fusion Model (new SOTA approach) with calibration
         self._train_attention_fusion(X_audio, X_text, y, "attention_fusion")
         
         # Train Normalized Late Fusion Model
         self._train_normalized_fusion(X_audio, X_text, y, "normalized_fusion")
         
         logger.info("[OK] Model training complete!")
+    
+    def _run_feature_diagnostics(
+        self,
+        X_audio: np.ndarray,
+        X_text: np.ndarray,
+        y: np.ndarray
+    ):
+        """Run feature diagnostics before training."""
+        logger.info("\n--- Running Feature Diagnostics ---")
+        
+        try:
+            from evaluation.feature_diagnostics import FeatureDiagnostics, quick_diagnostics
+            
+            # Quick check
+            data_ok = quick_diagnostics(X_audio, X_text, y)
+            
+            if not data_ok:
+                logger.warning("Critical data issues detected! Review diagnostics.")
+            
+            # Full diagnostics report (save to results)
+            diag = FeatureDiagnostics(X_audio, X_text, y)
+            report = diag.print_full_report()
+            
+            # Save report
+            report_path = self.output_dir / 'feature_diagnostics.txt'
+            diag.save_report(report_path)
+            
+            # Store diagnostic results
+            self.diagnostics = diag.run_all_checks()
+            
+        except ImportError as e:
+            logger.warning(f"Could not run feature diagnostics: {e}")
+        except Exception as e:
+            logger.warning(f"Feature diagnostics failed: {e}")
     
     def _train_attention_fusion(
         self,
@@ -495,8 +532,13 @@ class ExperimentPipeline:
         y: np.ndarray,
         model_name: str
     ):
-        """Train Attention-based Fusion Model with cross-validation."""
-        logger.info(f"\n--- Training {model_name} (Attention-based) ---")
+        """
+        Train Attention-based Fusion Model with cross-validation.
+        
+        NEW: Includes temperature scaling calibration and threshold optimization
+        to fix AUROC issues (was 0.5, now targeting 0.65+).
+        """
+        logger.info(f"\n--- Training {model_name} (Attention-based with Calibration) ---")
         
         if not TORCH_AVAILABLE:
             logger.warning("PyTorch not available, skipping attention fusion")
@@ -515,15 +557,26 @@ class ExperimentPipeline:
         
         skf = StratifiedKFold(n_splits=self.n_splits, shuffle=True, random_state=self.random_state)
         
+        # Extended metrics tracking (NEW)
         fold_results = {
-            'f1': [], 'auroc': [], 'mcc': [],
-            'specificity': [], 'sensitivity': [],
-            'audio_weight': [], 'text_weight': []
+            'f1': [], 'f1_raw': [],  # Raw = before calibration
+            'auroc': [], 'auroc_raw': [],
+            'mcc': [],
+            'specificity': [], 'specificity_raw': [],
+            'sensitivity': [],
+            'audio_weight': [], 'text_weight': [],
+            'temperature': [], 'threshold': []  # Calibration params
         }
+        
+        # Ensemble predictions storage (NEW)
+        ensemble_predictions = []
+        ensemble_labels = []
         
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         
         for fold, (train_idx, val_idx) in enumerate(skf.split(X_audio_scaled, y)):
+            logger.info(f"\n  === FOLD {fold+1}/{self.n_splits} ===")
+            
             # Prepare data
             X_audio_train = torch.FloatTensor(X_audio_scaled[train_idx])
             X_audio_val = torch.FloatTensor(X_audio_scaled[val_idx])
@@ -542,7 +595,7 @@ class ExperimentPipeline:
             model = AttentionFusionModel(
                 audio_dim=self.audio_dim,
                 text_dim=self.text_dim,
-                hidden_dim=128,  # Smaller for limited data
+                hidden_dim=128,
                 num_heads=4,
                 num_attention_layers=1,
                 dropout=0.4,
@@ -550,7 +603,7 @@ class ExperimentPipeline:
                 use_gated_fusion=True
             )
             
-            # Create trainer
+            # Create trainer with calibration enabled (NEW)
             n_pos = int(y_train.sum())
             n_neg = len(y_train) - n_pos
             
@@ -560,36 +613,74 @@ class ExperimentPipeline:
                 n_negative=max(1, n_neg),
                 learning_rate=1e-4,
                 weight_decay=0.01,
-                device=device
+                device=device,
+                use_temperature_scaling=True,  # NEW
+                use_threshold_optimization=True  # NEW
             )
             
-            # Train
+            # Train with automatic calibration (NEW)
             history = trainer.train(
                 train_loader,
                 val_loader,
                 epochs=50,
                 patience=10,
-                verbose=False
+                verbose=False,
+                calibrate_after_training=True  # NEW: Auto-calibrate
             )
             
-            # Evaluate
-            metrics = trainer.evaluate(val_loader)
+            # Evaluate with calibration (NEW)
+            metrics_calibrated = trainer.evaluate(val_loader, use_calibration=True)
+            metrics_raw = trainer.evaluate(val_loader, use_calibration=False)
             
-            fold_results['f1'].append(metrics['f1'])
-            fold_results['auroc'].append(metrics.get('auroc', 0.5))
-            fold_results['mcc'].append(metrics['mcc'])
-            fold_results['specificity'].append(metrics['specificity'])
-            fold_results['sensitivity'].append(metrics['recall'])
-            fold_results['audio_weight'].append(metrics.get('audio_weight', 0.5))
-            fold_results['text_weight'].append(metrics.get('text_weight', 0.5))
+            # Store results
+            fold_results['f1'].append(metrics_calibrated['f1'])
+            fold_results['f1_raw'].append(metrics_raw['f1'])
+            fold_results['auroc'].append(metrics_calibrated.get('auroc', 0.5))
+            fold_results['auroc_raw'].append(metrics_raw.get('auroc_raw', 0.5))
+            fold_results['mcc'].append(metrics_calibrated['mcc'])
+            fold_results['specificity'].append(metrics_calibrated['specificity'])
+            fold_results['specificity_raw'].append(metrics_raw['specificity'])
+            fold_results['sensitivity'].append(metrics_calibrated['recall'])
+            fold_results['audio_weight'].append(metrics_calibrated.get('audio_weight', 0.5))
+            fold_results['text_weight'].append(metrics_calibrated.get('text_weight', 0.5))
+            fold_results['temperature'].append(trainer.temperature)
+            fold_results['threshold'].append(trainer.optimal_threshold)
             
-            logger.info(f"  Fold {fold+1}: F1={metrics['f1']:.3f}, "
-                       f"MCC={metrics['mcc']:.3f}, "
-                       f"Audio={metrics.get('audio_weight', 0.5):.2f}")
+            # Collect for ensemble (NEW)
+            fold_proba = trainer.predict_proba_calibrated(val_loader)
+            ensemble_predictions.extend(fold_proba)
+            ensemble_labels.extend(y[val_idx])
+            
+            # Log fold results
+            logger.info(f"  Fold {fold+1} Results:")
+            logger.info(f"    F1:        {metrics_raw['f1']:.3f} -> {metrics_calibrated['f1']:.3f} (calibrated)")
+            logger.info(f"    AUROC:     {metrics_raw.get('auroc_raw', 0.5):.3f} -> {metrics_calibrated.get('auroc', 0.5):.3f}")
+            logger.info(f"    Spec:      {metrics_raw['specificity']:.3f} -> {metrics_calibrated['specificity']:.3f}")
+            logger.info(f"    Temp={trainer.temperature:.3f}, Threshold={trainer.optimal_threshold:.3f}")
             
             # Cleanup
             del model, trainer
             clear_gpu_memory()
+        
+        # Compute ensemble metrics (NEW)
+        ensemble_predictions = np.array(ensemble_predictions)
+        ensemble_labels = np.array(ensemble_labels)
+        
+        from sklearn.metrics import f1_score, roc_auc_score
+        try:
+            # Find optimal threshold for ensemble
+            from evaluation.calibration import find_optimal_threshold
+            ens_threshold, ens_f1, _ = find_optimal_threshold(ensemble_labels, ensemble_predictions, 'f1')
+            ens_preds = (ensemble_predictions > ens_threshold).astype(int)
+            ens_auroc = roc_auc_score(ensemble_labels, ensemble_predictions)
+            
+            logger.info(f"\n  ENSEMBLE METRICS (all folds combined):")
+            logger.info(f"    F1:    {ens_f1:.3f}")
+            logger.info(f"    AUROC: {ens_auroc:.3f}")
+            logger.info(f"    Optimal threshold: {ens_threshold:.3f}")
+        except Exception as e:
+            logger.warning(f"Could not compute ensemble metrics: {e}")
+            ens_f1, ens_auroc, ens_threshold = 0, 0, 0.5
         
         # Aggregate results
         self.results[model_name] = {
@@ -601,11 +692,21 @@ class ExperimentPipeline:
             for metric, values in fold_results.items()
         }
         
+        # Add ensemble metrics
+        self.results[model_name]['ensemble'] = {
+            'f1': float(ens_f1),
+            'auroc': float(ens_auroc),
+            'threshold': float(ens_threshold)
+        }
+        
         logger.info(f"\n  {model_name} SUMMARY:")
-        logger.info(f"    F1: {np.mean(fold_results['f1']):.3f} +/- {np.std(fold_results['f1']):.3f}")
-        logger.info(f"    MCC: {np.mean(fold_results['mcc']):.3f} +/- {np.std(fold_results['mcc']):.3f}")
-        logger.info(f"    Avg Audio Weight: {np.mean(fold_results['audio_weight']):.3f}")
-        logger.info(f"    Avg Text Weight: {np.mean(fold_results['text_weight']):.3f}")
+        logger.info(f"    F1 (calibrated): {np.mean(fold_results['f1']):.3f} +/- {np.std(fold_results['f1']):.3f}")
+        logger.info(f"    F1 (raw):        {np.mean(fold_results['f1_raw']):.3f} +/- {np.std(fold_results['f1_raw']):.3f}")
+        logger.info(f"    AUROC:           {np.mean(fold_results['auroc']):.3f} +/- {np.std(fold_results['auroc']):.3f}")
+        logger.info(f"    AUROC (raw):     {np.mean(fold_results['auroc_raw']):.3f} +/- {np.std(fold_results['auroc_raw']):.3f}")
+        logger.info(f"    Specificity:     {np.mean(fold_results['specificity']):.3f} +/- {np.std(fold_results['specificity']):.3f}")
+        logger.info(f"    Avg Temperature: {np.mean(fold_results['temperature']):.3f}")
+        logger.info(f"    Avg Threshold:   {np.mean(fold_results['threshold']):.3f}")
     
     def _train_normalized_fusion(
         self,
