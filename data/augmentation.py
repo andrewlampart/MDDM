@@ -563,6 +563,407 @@ class TextAugmenter:
 
 
 # ============================================================================
+# Topic-Based Text Augmentation (SOTA 2025)
+# Based on Lam et al. (2024) "Context-Aware Deep Learning"
+# ============================================================================
+
+class TopicShuffleAugmenter:
+    """
+    Topic-based text augmentation for depression detection.
+    
+    Instead of word-level augmentation, this operates on topic segments
+    (groups of semantically related sentences). This preserves depression-
+    related content while creating synthetic samples.
+    
+    Method:
+    1. Split transcript into topic segments (2-5 sentences)
+    2. Shuffle segment order
+    3. Optionally drop/duplicate segments
+    
+    Expected improvement: Dataset 107 -> 534 samples (+5x)
+    Based on Lam et al. (2024) - F1 improvement of +10%
+    """
+    
+    def __init__(
+        self,
+        min_sentences_per_segment: int = 2,
+        max_sentences_per_segment: int = 5,
+        random_seed: Optional[int] = None
+    ):
+        """
+        Initialize topic shuffle augmenter.
+        
+        Args:
+            min_sentences_per_segment: Minimum sentences per topic segment
+            max_sentences_per_segment: Maximum sentences per topic segment
+            random_seed: Random seed for reproducibility
+        """
+        self.min_sentences = min_sentences_per_segment
+        self.max_sentences = max_sentences_per_segment
+        
+        if random_seed is not None:
+            random.seed(random_seed)
+            np.random.seed(random_seed)
+    
+    def _split_into_sentences(self, text: str) -> List[str]:
+        """Split text into sentences."""
+        import re
+        
+        # Split on sentence boundaries
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        sentences = [s.strip() for s in sentences if s.strip()]
+        
+        return sentences
+    
+    def _create_topic_segments(self, sentences: List[str]) -> List[List[str]]:
+        """
+        Group sentences into topic segments.
+        
+        Uses variable-length segments to simulate natural topic transitions.
+        """
+        if len(sentences) < self.min_sentences:
+            return [sentences]
+        
+        segments = []
+        i = 0
+        
+        while i < len(sentences):
+            # Random segment length
+            seg_len = random.randint(self.min_sentences, self.max_sentences)
+            seg_len = min(seg_len, len(sentences) - i)
+            
+            if seg_len > 0:
+                segment = sentences[i:i + seg_len]
+                segments.append(segment)
+            
+            i += seg_len
+        
+        return segments
+    
+    def shuffle_topics(self, text: str) -> str:
+        """
+        Shuffle topic segments within transcript.
+        
+        Args:
+            text: Input transcript
+            
+        Returns:
+            Augmented transcript with shuffled topics
+        """
+        sentences = self._split_into_sentences(text)
+        
+        if len(sentences) < self.min_sentences * 2:
+            return text  # Too short to shuffle meaningfully
+        
+        segments = self._create_topic_segments(sentences)
+        
+        if len(segments) < 2:
+            return text
+        
+        # Shuffle segments
+        random.shuffle(segments)
+        
+        # Reconstruct text
+        augmented_sentences = [sent for segment in segments for sent in segment]
+        return ' '.join(augmented_sentences)
+    
+    def drop_topic(self, text: str, drop_ratio: float = 0.2) -> str:
+        """
+        Randomly drop a topic segment.
+        
+        Args:
+            text: Input transcript
+            drop_ratio: Probability of dropping each segment
+            
+        Returns:
+            Augmented transcript with dropped topic
+        """
+        sentences = self._split_into_sentences(text)
+        
+        if len(sentences) < self.min_sentences * 2:
+            return text
+        
+        segments = self._create_topic_segments(sentences)
+        
+        if len(segments) < 3:  # Keep at least 2 segments
+            return text
+        
+        # Randomly drop segments
+        kept_segments = [seg for seg in segments if random.random() > drop_ratio]
+        
+        if len(kept_segments) < 2:
+            kept_segments = segments[:2]  # Keep at least 2
+        
+        augmented_sentences = [sent for segment in kept_segments for sent in segment]
+        return ' '.join(augmented_sentences)
+    
+    def duplicate_topic(self, text: str, duplicate_ratio: float = 0.3) -> str:
+        """
+        Randomly duplicate a topic segment (emphasize certain topics).
+        
+        Args:
+            text: Input transcript
+            duplicate_ratio: Probability of duplicating each segment
+            
+        Returns:
+            Augmented transcript with duplicated topic
+        """
+        sentences = self._split_into_sentences(text)
+        
+        if len(sentences) < self.min_sentences:
+            return text
+        
+        segments = self._create_topic_segments(sentences)
+        
+        # Randomly duplicate segments
+        augmented_segments = []
+        for segment in segments:
+            augmented_segments.append(segment)
+            if random.random() < duplicate_ratio:
+                augmented_segments.append(segment)  # Duplicate
+        
+        augmented_sentences = [sent for segment in augmented_segments for sent in segment]
+        return ' '.join(augmented_sentences)
+    
+    def augment(
+        self,
+        text: str,
+        n_augmentations: int = 3,
+        techniques: Optional[List[str]] = None
+    ) -> List[str]:
+        """
+        Generate multiple augmented versions of text.
+        
+        Args:
+            text: Input transcript
+            n_augmentations: Number of augmented versions to generate
+            techniques: List of techniques ('shuffle', 'drop', 'duplicate')
+                       If None, uses all techniques
+            
+        Returns:
+            List of augmented texts
+        """
+        if techniques is None:
+            techniques = ['shuffle', 'drop', 'duplicate']
+        
+        augmented = []
+        
+        for i in range(n_augmentations):
+            # Rotate through techniques
+            tech = techniques[i % len(techniques)]
+            
+            if tech == 'shuffle':
+                aug_text = self.shuffle_topics(text)
+            elif tech == 'drop':
+                aug_text = self.drop_topic(text)
+            elif tech == 'duplicate':
+                aug_text = self.duplicate_topic(text)
+            else:
+                aug_text = self.shuffle_topics(text)
+            
+            augmented.append(aug_text)
+        
+        return augmented
+    
+    def augment_dataset(
+        self,
+        texts: List[str],
+        labels: np.ndarray,
+        n_augmentations: int = 3,
+        include_original: bool = True,
+        balance_classes: bool = True
+    ) -> Tuple[List[str], np.ndarray]:
+        """
+        Augment entire text dataset with topic shuffling.
+        
+        Args:
+            texts: List of transcripts
+            labels: Binary labels
+            n_augmentations: Augmentations per sample
+            include_original: Include original samples
+            balance_classes: Augment minority class more
+            
+        Returns:
+            Tuple of (augmented_texts, augmented_labels)
+        """
+        aug_texts = []
+        aug_labels = []
+        
+        # Class balance info
+        n_positive = np.sum(labels == 1)
+        n_negative = np.sum(labels == 0)
+        minority_class = 1 if n_positive < n_negative else 0
+        
+        for text, label in zip(texts, labels):
+            if include_original:
+                aug_texts.append(text)
+                aug_labels.append(label)
+            
+            # Determine augmentation count
+            if balance_classes and label == minority_class:
+                n_aug = n_augmentations * 2  # More augmentations for minority
+            else:
+                n_aug = n_augmentations
+            
+            # Generate augmentations
+            augmented = self.augment(text, n_augmentations=n_aug)
+            aug_texts.extend(augmented)
+            aug_labels.extend([label] * len(augmented))
+        
+        return aug_texts, np.array(aug_labels)
+
+
+def augment_features_with_topics(
+    text_features: np.ndarray,
+    audio_features: np.ndarray,
+    labels: np.ndarray,
+    texts: List[str],
+    text_encoder,
+    n_augmentations: int = 3,
+    include_original: bool = True,
+    balance_classes: bool = True,
+    random_seed: int = 42
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Augment pre-extracted features using topic-based text augmentation.
+    
+    This function:
+    1. Augments raw texts using topic shuffling
+    2. Re-encodes augmented texts to get new embeddings
+    3. Pairs with original audio features (audio not augmented)
+    
+    Args:
+        text_features: Original text features (N, text_dim)
+        audio_features: Original audio features (N, audio_dim)
+        labels: Binary labels (N,)
+        texts: Original transcript texts (N,)
+        text_encoder: TextEncoder to re-encode augmented texts
+        n_augmentations: Number of augmentations per sample
+        include_original: Include original samples
+        balance_classes: Augment minority class more
+        random_seed: Random seed
+        
+    Returns:
+        Tuple of (augmented_audio_features, augmented_text_features, augmented_labels)
+    """
+    logger.info(f"Augmenting dataset with topic shuffling (n_aug={n_augmentations})...")
+    
+    # Initialize augmenter
+    topic_aug = TopicShuffleAugmenter(random_seed=random_seed)
+    
+    # Augment texts
+    aug_texts, aug_labels = topic_aug.augment_dataset(
+        texts, labels,
+        n_augmentations=n_augmentations,
+        include_original=include_original,
+        balance_classes=balance_classes
+    )
+    
+    logger.info(f"  Original samples: {len(texts)}")
+    logger.info(f"  Augmented samples: {len(aug_texts)}")
+    
+    # Track which original sample each augmented sample comes from
+    aug_indices = []
+    idx = 0
+    for i, (text, label) in enumerate(zip(texts, labels)):
+        n_total = 1 if include_original else 0
+        
+        # Count augmentations for this sample
+        n_positive = np.sum(labels == 1)
+        n_negative = np.sum(labels == 0)
+        minority_class = 1 if n_positive < n_negative else 0
+        
+        if balance_classes and label == minority_class:
+            n_total += n_augmentations * 2
+        else:
+            n_total += n_augmentations
+        
+        for _ in range(n_total):
+            aug_indices.append(i)
+    
+    # Re-encode augmented texts
+    logger.info("  Re-encoding augmented texts...")
+    
+    if hasattr(text_encoder, 'encode_all'):
+        aug_text_features = text_encoder.encode_all(aug_texts)
+    elif hasattr(text_encoder, 'encode'):
+        aug_text_features = text_encoder.encode(aug_texts)
+    else:
+        raise ValueError("text_encoder must have encode() or encode_all() method")
+    
+    # Map audio features (audio stays the same, just duplicated)
+    aug_audio_features = audio_features[aug_indices]
+    
+    logger.info(f"  Final shapes: audio={aug_audio_features.shape}, text={aug_text_features.shape}")
+    logger.info(f"  Label distribution: {np.bincount(aug_labels)}")
+    
+    return aug_audio_features, aug_text_features, aug_labels
+
+
+def augment_features_simple(
+    audio_features: np.ndarray,
+    text_features: np.ndarray,
+    labels: np.ndarray,
+    n_augmentations: int = 3,
+    noise_std: float = 0.01,
+    include_original: bool = True,
+    balance_classes: bool = True,
+    random_seed: int = 42
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Simple feature-space augmentation (without re-encoding).
+    
+    Adds small Gaussian noise to features to create synthetic samples.
+    Faster than topic-based augmentation but less semantically meaningful.
+    
+    Args:
+        audio_features: Audio features (N, audio_dim)
+        text_features: Text features (N, text_dim)
+        labels: Labels (N,)
+        n_augmentations: Augmentations per sample
+        noise_std: Standard deviation of Gaussian noise
+        include_original: Include originals
+        balance_classes: Augment minority more
+        random_seed: Random seed
+        
+    Returns:
+        Tuple of (aug_audio, aug_text, aug_labels)
+    """
+    np.random.seed(random_seed)
+    
+    aug_audio = []
+    aug_text = []
+    aug_labels = []
+    
+    n_positive = np.sum(labels == 1)
+    n_negative = np.sum(labels == 0)
+    minority_class = 1 if n_positive < n_negative else 0
+    
+    for i in range(len(labels)):
+        if include_original:
+            aug_audio.append(audio_features[i])
+            aug_text.append(text_features[i])
+            aug_labels.append(labels[i])
+        
+        # Determine augmentation count
+        if balance_classes and labels[i] == minority_class:
+            n_aug = n_augmentations * 2
+        else:
+            n_aug = n_augmentations
+        
+        # Generate noisy versions
+        for _ in range(n_aug):
+            noisy_audio = audio_features[i] + np.random.randn(*audio_features[i].shape) * noise_std
+            noisy_text = text_features[i] + np.random.randn(*text_features[i].shape) * noise_std
+            
+            aug_audio.append(noisy_audio)
+            aug_text.append(noisy_text)
+            aug_labels.append(labels[i])
+    
+    return np.array(aug_audio), np.array(aug_text), np.array(aug_labels)
+
+
+# ============================================================================
 # Combined Multimodal Augmentation
 # ============================================================================
 
@@ -717,8 +1118,69 @@ if __name__ == "__main__":
     print(f"   Combined augment: {aug_text[:50]}...")
     print("   [OK] TextAugmenter works!")
     
+    # Test TopicShuffleAugmenter (SOTA 2025)
+    print("\n3. Testing TopicShuffleAugmenter (SOTA 2025):")
+    topic_aug = TopicShuffleAugmenter(
+        min_sentences_per_segment=2,
+        max_sentences_per_segment=3,
+        random_seed=42
+    )
+    
+    long_text = (
+        "I have been feeling really down lately. Nothing seems to bring me joy anymore. "
+        "I used to love going to work but now I dread it. My sleep has been terrible. "
+        "I wake up multiple times during the night. Sometimes I feel like giving up. "
+        "My family tries to help but I push them away. I don't know what's wrong with me."
+    )
+    
+    shuffled = topic_aug.shuffle_topics(long_text)
+    print(f"   Topic shuffle:")
+    print(f"     Original: {long_text[:60]}...")
+    print(f"     Shuffled: {shuffled[:60]}...")
+    
+    dropped = topic_aug.drop_topic(long_text)
+    print(f"   Topic drop: {len(long_text)} -> {len(dropped)} chars")
+    
+    duplicated = topic_aug.duplicate_topic(long_text)
+    print(f"   Topic duplicate: {len(long_text)} -> {len(duplicated)} chars")
+    
+    # Test dataset augmentation
+    texts = [long_text, "I had a great day at work!", "Feeling anxious about tomorrow."]
+    labels = np.array([1, 0, 1])
+    
+    aug_texts, aug_labels = topic_aug.augment_dataset(
+        texts, labels,
+        n_augmentations=3,
+        include_original=True,
+        balance_classes=True
+    )
+    
+    print(f"   Dataset augmentation:")
+    print(f"     Original: {len(texts)} samples")
+    print(f"     Augmented: {len(aug_texts)} samples")
+    print(f"     Labels distribution: {np.bincount(aug_labels)}")
+    print("   [OK] TopicShuffleAugmenter works!")
+    
+    # Test simple feature augmentation
+    print("\n4. Testing Simple Feature Augmentation:")
+    audio_feats = np.random.randn(3, 768)
+    text_feats = np.random.randn(3, 768)
+    
+    aug_audio_f, aug_text_f, aug_labels_f = augment_features_simple(
+        audio_feats, text_feats, labels,
+        n_augmentations=2,
+        noise_std=0.01,
+        include_original=True,
+        balance_classes=True
+    )
+    
+    print(f"   Original: {audio_feats.shape}")
+    print(f"   Augmented: {aug_audio_f.shape}")
+    print(f"   Labels: {np.bincount(aug_labels_f)}")
+    print("   [OK] Simple feature augmentation works!")
+    
     # Test MultimodalAugmenter
-    print("\n3. Testing MultimodalAugmenter:")
+    print("\n5. Testing MultimodalAugmenter:")
     mm_aug = MultimodalAugmenter(sample_rate=sr, random_seed=42)
     
     aug_audio, aug_text = mm_aug.augment_pair(audio, test_text)

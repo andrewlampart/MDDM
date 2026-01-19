@@ -208,7 +208,7 @@ class Config:
     MIN_FEATURE_CORRELATION: float = 0.05  # Features below this may be noise
     
     # ===================
-    # Attention Fusion Model parameters (NEW)
+    # Attention Fusion Model parameters
     # ===================
     ATTENTION_HIDDEN_DIM: int = 128
     ATTENTION_NUM_HEADS: int = 4
@@ -220,6 +220,50 @@ class Config:
     ATTENTION_WEIGHT_DECAY: float = 0.01
     ATTENTION_EPOCHS: int = 50
     ATTENTION_PATIENCE: int = 10
+    
+    # ===================
+    # Teacher-Student Knowledge Distillation (SOTA 2025)
+    # Based on Gan et al. 2025 (F1=99.1%)
+    # ===================
+    # Teacher model parameters
+    TEACHER_HIDDEN_DIMS: List[int] = field(default_factory=lambda: [128, 64])
+    TEACHER_DROPOUT: float = 0.3
+    TEACHER_LEARNING_RATE: float = 6.25e-4  # SOTA value
+    TEACHER_EPOCHS: int = 10
+    TEACHER_PATIENCE: int = 5
+    
+    # Student fusion model parameters
+    STUDENT_HIDDEN_DIM: int = 256  # SOTA: 256 (increased from 128)
+    STUDENT_NUM_HEADS: int = 8     # SOTA: 8 (increased from 4)
+    STUDENT_DROPOUT: float = 0.3
+    STUDENT_LEARNING_RATE: float = 1e-4  # SOTA value
+    STUDENT_EPOCHS: int = 20
+    STUDENT_PATIENCE: int = 10
+    STUDENT_USE_BIDIRECTIONAL: bool = True  # Bidirectional cross-attention
+    
+    # Knowledge Distillation parameters
+    KD_ALPHA: float = 0.7  # SOTA: 0.7 (balance KL vs BCE)
+    KD_TEMPERATURE: float = 1.0  # Temperature for softening
+    KD_LABEL_SMOOTHING: float = 0.1
+    
+    # Teacher-Student batch size (smaller for stability)
+    TEACHER_STUDENT_BATCH_SIZE: int = 8  # SOTA: 8
+    
+    # ===================
+    # Data Augmentation (SOTA 2025)
+    # ===================
+    USE_TEXT_AUGMENTATION: bool = True
+    TEXT_AUGMENTATION_FACTOR: int = 3  # 3x augmentation per sample
+    AUGMENT_TRAIN_ONLY: bool = True  # Only augment training data
+    
+    # Topic-based augmentation
+    TOPIC_SHUFFLE_AUGMENTATION: bool = True
+    TOPIC_SEGMENT_MIN_SENTENCES: int = 2
+    TOPIC_SEGMENT_MAX_SENTENCES: int = 5
+    
+    # Synonym replacement augmentation
+    SYNONYM_AUGMENTATION: bool = False  # Optional
+    SYNONYM_REPLACE_RATIO: float = 0.1
     
     def __post_init__(self):
         """Create all necessary directories"""

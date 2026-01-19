@@ -6,6 +6,7 @@ Modules:
 - audio_encoder_advanced: Wav2Vec 2.0 + prosody features
 - fusion_fixed: Fixed multimodal fusion with proper regularization
 - attention_fusion: Attention-based fusion (SOTA 2024-2025)
+- teacher_student: Teacher-Student Knowledge Distillation (SOTA 2025)
 """
 
 from .text_encoder_bert import (
@@ -42,6 +43,12 @@ from .attention_fusion import (
     AttentionFusionTrainer,
     create_attention_fusion_model,
 )
+from .teacher_student import (
+    TeacherModel,
+    StudentFusionModel,
+    HybridKDLoss,
+    TeacherStudentTrainer,
+)
 
 __all__ = [
     # Text
@@ -74,4 +81,9 @@ __all__ = [
     'AttentionFusionWithBiLSTM',
     'AttentionFusionTrainer',
     'create_attention_fusion_model',
+    # Teacher-Student (SOTA 2025)
+    'TeacherModel',
+    'StudentFusionModel',
+    'HybridKDLoss',
+    'TeacherStudentTrainer',
 ]
